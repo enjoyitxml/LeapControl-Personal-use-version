@@ -18,6 +18,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.leapcontrol.app.PERSONAL_EDITION
 import com.leapcontrol.app.R
 
 /**
@@ -130,15 +131,19 @@ fun OpenSourceScreen(
         }
 
         // ---- 使用范围：源码公开，但不等于可以随意重新分发 ----
+        // 个人学习版不提「外传 / 二次分发 / 改名换壳」：这个包本身就是公开分发的产物
+        // （用户 2026-11-15 要求直接不提），标题里的「务必遵守」也一并去掉。
         Spacer(Modifier.height(12.dp))
-        SettingsCard("使用范围（请务必遵守）") {
+        SettingsCard(if (PERSONAL_EDITION) "使用范围" else "使用范围（请务必遵守）") {
             ClauseList(
-                listOf(
-                    "零控源码已在 GitHub 公开，可自由查阅、学习与自行编译。",
-                    "本软件仅供车友自用体验，请勿外传、请勿二次分发，不要上传到应用商店、网盘、论坛或任何公开渠道。",
-                    "请勿改名换壳后以任何名义重新发布，更不得用于商业牟利。",
-                    "若基于本项目二次开发，请保留原作者署名与本项目出处。",
-                ),
+                buildList {
+                    add("零控源码已在 GitHub 公开，可自由查阅、学习与自行编译。")
+                    if (!PERSONAL_EDITION) {
+                        add("本软件仅供车友自用体验，请勿外传、请勿二次分发，不要上传到应用商店、网盘、论坛或任何公开渠道。")
+                        add("请勿改名换壳后以任何名义重新发布，更不得用于商业牟利。")
+                    }
+                    add("若基于本项目二次开发，请保留原作者署名与本项目出处。")
+                },
             )
         }
 

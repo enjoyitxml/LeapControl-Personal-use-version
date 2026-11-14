@@ -19,6 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.leapcontrol.app.PERSONAL_EDITION
 
 /**
  * 免责声明正文。
@@ -41,17 +42,34 @@ object DisclaimerText {
     /** 章节：标题 + 条款列表。 */
     data class Section(val title: String, val items: List<String>)
 
+    /**
+     * 第一节「软件性质说明」。
+     *
+     * 个人学习版（[PERSONAL_EDITION]）不提任何「传播 / 分发」的话：这个包本身就是公开分发的产物，
+     * 在它自己的免责声明里写「请勿外传、请勿二次分发」自相矛盾（用户 2026-11-15 要求直接不提）。
+     * 自用版照旧保留那两句 —— 它确实只给内部好友用。
+     */
+    private val natureItems: List<String> = buildList {
+        add("本软件为个人开发的第三方辅助控车工具，非零跑汽车官方出品、非官方授权、非官方关联软件。")
+        add(
+            "本软件基于开源项目二次开发而来，源码已在 GitHub 公开，可自由查阅" +
+                if (PERSONAL_EDITION) "。" else "；但请勿反编译改名后重新分发。",
+        )
+        if (!PERSONAL_EDITION) {
+            add(
+                "本软件仅供车友自用体验与交流，请勿外传、请勿二次分发，" +
+                    "也不要上传到应用商店、网盘、论坛等任何公开渠道。",
+            )
+        }
+        add(
+            "本软件仅为用户提供便捷控车、车况查看、自定义辅助功能，所有车辆底层权限、车辆协议" +
+                "均来源于用户设备本地合法授权，不破解、不篡改、不绕过官方安全机制。",
+        )
+        add("本软件与零跑官方品牌、公司、系统无任何隶属、授权、合作关系，所有功能仅供车主个人学习、自用、体验。")
+    }
+
     val SECTIONS: List<Section> = listOf(
-        Section(
-            "一、软件性质说明",
-            listOf(
-                "本软件为个人开发的第三方辅助控车工具，非零跑汽车官方出品、非官方授权、非官方关联软件。",
-                "本软件基于开源项目二次开发而来，源码已在 GitHub 公开，可自由查阅；但请勿反编译改名后重新分发。",
-                "本软件仅供车友自用体验与交流，请勿外传、请勿二次分发，也不要上传到应用商店、网盘、论坛等任何公开渠道。",
-                "本软件仅为用户提供便捷控车、车况查看、自定义辅助功能，所有车辆底层权限、车辆协议均来源于用户设备本地合法授权，不破解、不篡改、不绕过官方安全机制。",
-                "本软件与零跑官方品牌、公司、系统无任何隶属、授权、合作关系，所有功能仅供车主个人学习、自用、体验。",
-            ),
-        ),
+        Section("一、软件性质说明", natureItems),
         Section(
             "二、使用风险告知",
             listOf(

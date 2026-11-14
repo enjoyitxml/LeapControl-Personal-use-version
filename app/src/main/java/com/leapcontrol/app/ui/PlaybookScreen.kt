@@ -23,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.leapcontrol.app.PERSONAL_EDITION
 
 /**
  * 「玩法说明」页（首页右上角那个手柄图标进入）。
@@ -183,13 +184,16 @@ fun PlaybookScreen(
             tip = "下载偶尔会慢甚至卡住，不是你手机的问题：换个网络重试就好。",
         )
 
-        Spacer(Modifier.height(20.dp))
-        Text(
-            "本软件仅供车友自用交流，请勿外传或二次分发。",
-            color = C.textSecondary.copy(alpha = 0.75f),
-            fontSize = 10.sp,
-            modifier = Modifier.padding(start = 4.dp),
-        )
+        // 个人学习版不提「外传 / 二次分发」：它就是公开分发的产物（用户 2026-11-15 要求直接不提）
+        if (!PERSONAL_EDITION) {
+            Spacer(Modifier.height(20.dp))
+            Text(
+                "本软件仅供车友自用交流，请勿外传或二次分发。",
+                color = C.textSecondary.copy(alpha = 0.75f),
+                fontSize = 10.sp,
+                modifier = Modifier.padding(start = 4.dp),
+            )
+        }
 
         Spacer(Modifier.height(24.dp))
         Spacer(Modifier.navigationBarsPadding())

@@ -191,6 +191,106 @@ def patched_manifest(src: str) -> str:
     return out
 
 
+# ---------------------------------------------------------------------------
+# README 改写
+# ---------------------------------------------------------------------------
+# 公开仓库的 README 与自用版共用一份（用户要求两边保持一致），但里面有些话只对自用版成立：
+# 包名不同、仓库地址不同、「请勿外传 / 请勿二次分发」放在公开仓库里自相矛盾、
+# 内置令牌在公开版根本不存在。所以组装公开树时逐条改成公开版的说法。
+#
+# **哪条没命中就直接报错**：README 改了措辞之后，脚本必须当场喊出来，
+# 否则公开仓库会悄悄带着自用版的说法发出去（这类漏改只有读者会发现）。
+README_REWRITES: list[tuple[str, str]] = [
+    (
+        "零跑汽车第三方控车 Android 应用，包名 `com.leapcontrol.app`。\n",
+        "零跑汽车第三方控车 Android 应用（个人学习研究版），包名 `com.leapcontrol.personal`，可与自用版同时安装。\n",
+    ),
+    (
+        "> 📖 **本项目已在 GitHub 开源**：<https://github.com/enjoyitxml/LeapControl>，基于开源项目二次开发。\n"
+        "> **仅供车友自用体验与交流，请勿外传、请勿二次分发**，也不要上传到应用商店、网盘、论坛等任何公开渠道。\n",
+        "> 📖 **本仓库用于个人学习与技术研究**：<https://github.com/enjoyitxml/LeapControl-Personal-use-version>，基于开源项目二次开发。\n"
+        "> 与自用版功能完全一致，只去掉品牌标识、补回「支持开发者」与「开源协议与致谢」入口。\n",
+    ),
+    (
+        "| 本仓库 | <https://github.com/enjoyitxml/LeapControl> |\n",
+        "| 本仓库 | <https://github.com/enjoyitxml/LeapControl-Personal-use-version> |\n",
+    ),
+    (
+        "完整记录见 [CHANGELOG.md](CHANGELOG.md)，历史安装包在 [Releases](https://github.com/enjoyitxml/LeapControl/releases)。\n",
+        "完整记录见 [CHANGELOG.md](CHANGELOG.md)，历史安装包在 [Releases](https://github.com/enjoyitxml/LeapControl-Personal-use-version/releases)。\n",
+    ),
+    (
+        "3. 二次开发部分（界面重构、功能模块自定义、四季主题等）已随本项目一并开源，可供学习与自行编译；**禁止改名换壳后二次分发，禁止任何形式的商业牟利**。\n",
+        "3. 二次开发部分（界面重构、功能模块自定义、四季主题等）已随本项目一并开源，可供学习与自行编译。\n",
+    ),
+    (
+        "### 使用范围（请务必遵守）\n"
+        "\n"
+        "1. 零控本身已在 GitHub 开源：<https://github.com/enjoyitxml/LeapControl>，源码可查阅、可自行编译。\n"
+        "2. 二次开发部分同样公开，欢迎提 issue 或 PR 一起完善。\n"
+        "3. 本软件**仅供车友自用体验与交流，请勿外传、请勿二次分发**，不要上传到应用商店、网盘、论坛或任何公开渠道。\n"
+        "4. 请勿反编译、二次打包、改名换壳后以任何名义重新发布，更不得用于商业牟利。\n",
+        "### 使用范围\n"
+        "\n"
+        "1. 零控本身已在 GitHub 开源：<https://github.com/enjoyitxml/LeapControl-Personal-use-version>，源码可查阅、可自行编译。\n"
+        "2. 二次开发部分同样公开，欢迎提 issue 或 PR 一起完善。\n"
+        "3. 本版本面向个人学习与技术研究，与自用版功能一致。\n",
+    ),
+    (
+        "### 五、使用范围与传播\n"
+        "\n"
+        "- 本软件仅供车友自用体验，请勿外传、请勿二次分发，也不要上传到任何应用商店、网盘或论坛。\n"
+        "- 本项目源码公开，欢迎查阅与自行编译；但请勿改名换壳后以任何名义重新发布。\n"
+        "- 软件按现状提供，不做任何形式的可用性承诺；如后续停止维护，恕不另行通知。\n",
+        "### 五、使用范围\n"
+        "\n"
+        "- 本版本面向个人学习与技术研究，源码公开，欢迎查阅与自行编译。\n"
+        "- 软件按现状提供，不做任何形式的可用性承诺；如后续停止维护，恕不另行通知。\n",
+    ),
+    (
+        "2. 本软件基于开源项目二次开发而来，源码已在 GitHub 公开，可自由查阅；但请勿改名换壳后重新分发。\n"
+        "3. 本软件**仅供车友自用体验与交流，请勿外传、请勿二次分发**，也不要上传到应用商店、网盘、论坛等任何公开渠道。\n"
+        "4. 本软件仅为用户提供便捷控车、车况查看、自定义辅助功能，所有车辆底层权限、车辆协议均来源于用户设备本地合法授权，不破解、不篡改、不绕过官方安全机制。\n"
+        "5. 本软件与零跑官方品牌、公司、系统无任何隶属、授权、合作关系，所有功能仅供车主个人学习、自用、体验。\n",
+        "2. 本软件基于开源项目二次开发而来，源码已在 GitHub 公开，可自由查阅。\n"
+        "3. 本软件仅为用户提供便捷控车、车况查看、自定义辅助功能，所有车辆底层权限、车辆协议均来源于用户设备本地合法授权，不破解、不篡改、不绕过官方安全机制。\n"
+        "4. 本软件与零跑官方品牌、公司、系统无任何隶属、授权、合作关系，所有功能仅供车主个人学习、自用、体验。\n",
+    ),
+    (
+        "- 本仓库为**私有**仓库，源码含零跑官方服务端的逆向协议实现，**仅供个人学习与技术研究**，请勿用于商业用途或任何非法目的。\n",
+        "- 本仓库为**公开**仓库，源码含零跑官方服务端的逆向协议实现，**仅供个人学习与技术研究**。\n",
+    ),
+    (
+        "- **APK 内的 GitHub 令牌是密文**：仓库转私有后，检测更新与下载安装包都要带一个**只读** PAT。\n"
+        "  它以密文写入 `BuildConfig.GITHUB_TOKEN_ENCRYPTED`（构建期由 `app/build.gradle.kts` 做\n"
+        "  逐字节 XOR 变长盐编码），运行时由 `ObfuscatedSecrets.getGitHubToken()` 还原，\n"
+        "  源码、git 历史与 DEX 常量池里都没有明文（可以拿 `strings` 扫一遍 `classes*.dex` 验证）。\n"
+        "  需要轮换时改 `local.properties` 的 `leapcontrol.gh.token` 即可，不必动代码。\n"
+        "  **说明白一点**：解混淆算法就在同一个 APK 里，这层只是「不明文」，不是安全存储 ——\n"
+        "  所以这颗令牌必须是**最小权限 + 可随时吊销**的，只给该仓库 Releases / Contents 的读权限。\n",
+        "- **公开版不带任何内置令牌**：检测更新与下载安装包都匿名访问本仓库的 Releases 接口，\n"
+        "  APK 里没有 PAT，构建也不需要 `local.properties` 里的令牌项。\n",
+    ),
+    (
+        "  私有仓库下匿名访问一律 404，网页直链在浏览器里也需要登录态，所以下载只走 API。\n",
+        "  公开仓库的 Release 附件可以直接下载，这里的实现仍统一走 API，保持两版代码一致。\n",
+    ),
+]
+
+
+def public_readme(src: str) -> str:
+    """把自用版 README 改写成公开版的说法（包名、仓库地址、去掉传播限制）。"""
+    out = src
+    for old, new in README_REWRITES:
+        if old not in out:
+            raise Fail(
+                "README 改写规则没命中，README 可能改过措辞了：\n  "
+                + old.splitlines()[0][:80]
+            )
+        out = out.replace(old, new, 1)
+    return out
+
+
 def build_tree(root: str, tmp: str) -> str:
     """用临时 index 组装公开版 tree，返回 tree sha。工作区不受影响。"""
     index = os.path.join(tmp, "index")
@@ -211,9 +311,10 @@ def build_tree(root: str, tmp: str) -> str:
     for rel in WIDGET_LAYOUTS:
         put(rel, patched_widget_layout(open(os.path.join(root, rel), encoding="utf-8").read()))
 
-    # README 与自用版**逐字一致**（用户 2026-11-15 要求）：不再套 docs/public 的简版，
-    # 也不删 docs/screenshots —— README 里引用了那几张界面预览图，删了图就全裂。
-    # （`docs/public/README.md` 保留在仓库里但已不再使用，留着当历史。）
+    put("README.md", public_readme(open(os.path.join(root, "README.md"), encoding="utf-8").read()))
+
+    # README 与自用版共用一份，只按 README_REWRITES 改掉那些只对自用版成立的说法；
+    # `docs/screenshots` 必须保留 —— README 里引用了那几张界面预览图，删了图就全裂。
     return git("write-tree", cwd=root, env=env).strip()
 
 

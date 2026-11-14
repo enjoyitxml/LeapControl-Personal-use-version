@@ -222,6 +222,40 @@ class EditionTest {
         )
         val personalBlock = usageSrc.substringAfter("if (PERSONAL_EDITION)").substringBefore("} else {")
         assertFalse("个人学习版还在写「严禁在任何公开社交平台…传播」", personalBlock.contains("严禁在任何公开社交平台"))
-        assertTrue("个人学习版少了责任划分那句", personalBlock.contains("自行承担"))
+        // 2026-11-15 第二次调整：那句「后果由使用者自行承担」也不提了
+        assertFalse("个人学习版又写回了「后果由使用者自行承担」", personalBlock.contains("自行承担"))
+    }
+
+    @Test
+    fun `个人学习版的条款页不提传播与二次分发`() {
+        // 公开分发的包在自己的免责声明 / 隐私条款 / 开源协议里写「请勿外传、请勿二次分发」，
+        // 自相矛盾。四处都按版本收起，自用版照旧保留（它确实只给内部好友用）。
+        val disclaimer = ui("DisclaimerScreen.kt")
+        assertTrue(
+            "免责声明没按版本切「软件性质」条款",
+            disclaimer.contains("private val natureItems: List<String> = buildList") &&
+                disclaimer.contains("if (!PERSONAL_EDITION) {") &&
+                disclaimer.contains("请勿外传、请勿二次分发"),
+        )
+        assertTrue(
+            "免责声明里「请勿反编译改名后重新分发」没接版本开关",
+            disclaimer.contains("if (PERSONAL_EDITION) \"。\" else \"；但请勿反编译改名后重新分发。\""),
+        )
+        val privacy = ui("PrivacyScreen.kt")
+        assertTrue(
+            "隐私条款第五节没按版本切",
+            privacy.contains("(if (PERSONAL_EDITION) \"五、使用范围\" else \"五、使用范围与传播\")"),
+        )
+        val openSource = ui("OpenSourceScreen.kt")
+        assertTrue(
+            "开源协议页的使用范围卡没按版本切",
+            openSource.contains("if (PERSONAL_EDITION) \"使用范围\" else \"使用范围（请务必遵守）\""),
+        )
+        val playbook = ui("PlaybookScreen.kt")
+        assertTrue(
+            "玩法说明页脚的「请勿外传」没按版本收起",
+            playbook.contains("if (!PERSONAL_EDITION)") &&
+                playbook.contains("本软件仅供车友自用交流，请勿外传或二次分发。"),
+        )
     }
 }
