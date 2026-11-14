@@ -136,10 +136,6 @@ def changelog_body(root: str, version: str) -> str:
     return (m.group(1).strip() if m else "- 与自用版同步")
 
 
-def public_readme(root: str, version: str) -> str:
-    return open(os.path.join(root, "docs/public/README.md"), encoding="utf-8").read()
-
-
 def public_notes(root: str, version: str) -> str:
     tpl = open(os.path.join(root, "docs/public/release-notes.md"), encoding="utf-8").read()
     return tpl.replace("{{VERSION}}", version).replace(
@@ -206,17 +202,14 @@ def build_tree(root: str, tmp: str) -> str:
 
     put("gradle.properties", public_gradle_properties(
         open(os.path.join(root, "gradle.properties"), encoding="utf-8").read()))
-    put("README.md", public_readme(root, version_of(root)))
     put("app/src/main/AndroidManifest.xml", patched_manifest(
         open(os.path.join(root, "app/src/main/AndroidManifest.xml"), encoding="utf-8").read()))
     for rel in WIDGET_LAYOUTS:
         put(rel, patched_widget_layout(open(os.path.join(root, rel), encoding="utf-8").read()))
 
-    # 截图拍的是自用版界面，带着官方 logo
-    shots = run(["git", "ls-files", "docs/screenshots"], cwd=root).stdout.split()
-    for rel in shots:
-        git("update-index", "--force-remove", rel, cwd=root, env=env, check=False)
-
+    # README 与自用版**逐字一致**（用户 2026-11-15 要求）：不再套 docs/public 的简版，
+    # 也不删 docs/screenshots —— README 里引用了那几张界面预览图，删了图就全裂。
+    # （`docs/public/README.md` 保留在仓库里但已不再使用，留着当历史。）
     return git("write-tree", cwd=root, env=env).strip()
 
 
@@ -230,6 +223,29 @@ def remote_head(tok: str) -> str:
         return ""
     line = out.stdout.strip().splitlines()
     return line[0].split()[0] if line else ""
+
+
+def require_binaries(build_dir: str) -> None:
+    """构建前确认几个**只以二进制形式存在**的必要文件都在树里。
+
+    2026-11-15 的事故：`app/src/main/assets/shumei.dex` 被 `.gitignore` 的 `*.dex`
+    规则吃掉了 —— 本地工作区有、git 里没有，于是自用版（从工作区构建）一切正常，
+    公开版（从 `git archive` 出来的树构建）根本装不到安全组件，登录必然报
+    「设备安全组件加载失败」，而且构建阶段一点提示都没有。
+    这类文件一旦漏掉，只有装到真机上才会发现，所以在构建前先卡一道。
+    """
+    required = [
+        "app/src/main/assets/shumei.dex",
+        "app/src/main/jniLibs/arm64-v8a/libsmsdk.so",
+        "gradle/wrapper/gradle-wrapper.jar",
+    ]
+    missing = [rel for rel in required if not os.path.isfile(os.path.join(build_dir, rel))]
+    if missing:
+        raise Fail(
+            "公开树里缺少必需文件（多半是被 .gitignore 忽略了，本地有但没进 git）：\n  "
+            + "\n  ".join(missing)
+            + "\n  处理：在 .gitignore 里加 `!<路径>` 反选规则，然后 `git add` 提交。"
+        )
 
 
 def main() -> int:
@@ -287,6 +303,7 @@ def main() -> int:
             local = os.path.join(root, "local.properties")
             if os.path.exists(local):
                 shutil.copy2(local, os.path.join(build_dir, "local.properties"))
+            require_binaries(build_dir)
             java_home = run(["/usr/libexec/java_home", "-v", "21"]).stdout.strip()
             print("==> 在公开版源码里构建 release（约 4~5 分钟）…")
             run(["./gradlew", ":app:assembleRelease", "--no-daemon", "-q"],

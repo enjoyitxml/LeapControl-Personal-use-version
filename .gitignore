@@ -41,6 +41,9 @@ Thumbs.db
 *.aab
 *.ap_
 *.dex
+# 反选：数美安全组件是随包分发的运行时依赖，不是打包产物。
+# 漏了它登录会直接报「设备安全组件加载失败」（2026-11-15 踩过一次）。
+!app/src/main/assets/shumei.dex
 
 # ===== 第三方服务配置 =====
 google-services.json

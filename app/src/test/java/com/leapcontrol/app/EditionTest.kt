@@ -181,15 +181,39 @@ class EditionTest {
     }
 
     @Test
-    fun `使用范围在个人学习版改成学习研究口径`() {
+    fun `安全组件随包分发且不被 gitignore 吃掉`() {
+        // 2026-11-15 事故：`.gitignore` 的 `*.dex` 把 assets/shumei.dex 忽略了。
+        // 自用版从工作区构建，一切正常；公开版从 `git archive` 出来的树构建，
+        // 包里根本没有安全组件，一登录就报「设备安全组件加载失败」。
         assertTrue(
-            "个人学习版声明没改口径",
+            "assets/shumei.dex 不见了，登录会直接失败",
+            File(root, "app/src/main/assets/shumei.dex").isFile,
+        )
+        assertTrue(
+            "`.gitignore` 的 *.dex 又把安全组件忽略了（公开版会在构建阶段悄悄丢掉它）",
+            file(".gitignore").contains("!app/src/main/assets/shumei.dex"),
+        )
+    }
+
+    @Test
+    fun `使用范围在个人学习版整块不显示`() {
+        // 2026-11-15：公开分发的包里再挂「仅限个人学习研究、请及时卸载」自相矛盾，
+        // 用户要求把登录页与「我的」页这两处入口都去掉（关于页里的条款不动）。
+        assertTrue(
+            "登录页的使用范围块没按版本收起",
+            loginSrc.contains("\"使用范围\"") && loginSrc.contains("if (!PERSONAL_EDITION) {"),
+        )
+        assertTrue(
+            "「我的」页的使用范围卡没按版本收起",
+            profileSrc.contains("UsageNoticeCard()") && profileSrc.contains("if (!PERSONAL_EDITION) {"),
+        )
+        // 文案本身留着（自用版在用），个人学习版靠常量折叠让整段不可达
+        assertTrue(
+            "个人学习版声明口径被删掉了",
             usageSrc.contains("本软件仅限个人学习研究使用，请在学习研究后及时卸载。"),
         )
-        // 公开版本自己就是「公开传播」的结果，再写「严禁传播」自相矛盾
         val personalBlock = usageSrc.substringAfter("if (PERSONAL_EDITION)").substringBefore("} else {")
         assertFalse("个人学习版还在写「严禁在任何公开社交平台…传播」", personalBlock.contains("严禁在任何公开社交平台"))
-        // 两句结构不能丢：一句说范围、一句划责任
         assertTrue("个人学习版少了责任划分那句", personalBlock.contains("自行承担"))
     }
 }

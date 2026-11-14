@@ -295,34 +295,38 @@ fun LoginScreen(
             // 登录是每个用户必经的一屏，把它放这儿比藏在「关于」二级页里更看得见。
             // 文案与「关于」页共用 [USAGE_NOTICE_LINES]，两边永远一致。
             // 星空上不做大字号：10.5sp / 行高 16.5sp 在深底上仍清楚，也不会把登录按钮往上顶。
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(Color.White.copy(alpha = 0.055f))
-                    .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(14.dp))
-                    .padding(horizontal = 14.dp, vertical = 12.dp),
-            ) {
-                Text(
-                    "使用范围",
-                    color = Color.White.copy(alpha = 0.80f),
-                    fontSize = 11.sp,
-                    lineHeight = 15.sp,
-                    fontWeight = FontWeight.Medium,
-                    letterSpacing = 0.6.sp,
-                )
-                Spacer(Modifier.height(6.dp))
-                USAGE_NOTICE_LINES.forEachIndexed { index, line ->
-                    if (index > 0) Spacer(Modifier.height(5.dp))
+            // 个人学习版（[PERSONAL_EDITION]）整块不显示：那套「仅限个人学习研究、请及时卸载」
+            // 的口径放在公开分发的应用里自相矛盾（用户 2026-11-15 要求去掉）。
+            if (!PERSONAL_EDITION) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Color.White.copy(alpha = 0.055f))
+                        .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(14.dp))
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                ) {
                     Text(
-                        line,
-                        color = Color.White.copy(alpha = if (index == 0) 0.60f else 0.72f),
-                        fontSize = 10.5.sp,
-                        lineHeight = 16.5.sp,
+                        "使用范围",
+                        color = Color.White.copy(alpha = 0.80f),
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp,
+                        fontWeight = FontWeight.Medium,
+                        letterSpacing = 0.6.sp,
                     )
+                    Spacer(Modifier.height(6.dp))
+                    USAGE_NOTICE_LINES.forEachIndexed { index, line ->
+                        if (index > 0) Spacer(Modifier.height(5.dp))
+                        Text(
+                            line,
+                            color = Color.White.copy(alpha = if (index == 0) 0.60f else 0.72f),
+                            fontSize = 10.5.sp,
+                            lineHeight = 16.5.sp,
+                        )
+                    }
                 }
+                Spacer(Modifier.height(14.dp))
             }
-            Spacer(Modifier.height(14.dp))
             Spacer(Modifier.navigationBarsPadding())
         }
     }

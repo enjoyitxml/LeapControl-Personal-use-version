@@ -350,8 +350,11 @@ fun ProfileScreen(
             // 2026-11-09 的折腾史：先是主题色强调卡（太抢视野）→ 改成页脚灰字（删了标题又居中，
             // 用户嫌丑）→ 现在做成与上面七条入口**同一款小卡片**，样式见 UsageNoticeCard。
             // 间距用 ITEM_GAP 而不是 14dp：它现在也是一张卡，节奏要跟上面那串保持一致。
-            Spacer(Modifier.height(ITEM_GAP))
-            UsageNoticeCard()
+            // 个人学习版（[PERSONAL_EDITION]）整张卡不显示（用户 2026-11-15 要求去掉）。
+            if (!PERSONAL_EDITION) {
+                Spacer(Modifier.height(ITEM_GAP))
+                UsageNoticeCard()
+            }
 
             Spacer(Modifier.height(10.dp))
 
