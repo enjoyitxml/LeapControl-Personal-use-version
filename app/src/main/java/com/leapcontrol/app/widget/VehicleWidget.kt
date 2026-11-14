@@ -690,6 +690,11 @@ object VehicleWidget {
         // 个人学习版换成不带品牌标识的方向盘（[PERSONAL_EDITION]）：
         // 形状重新画过（实心环 + 三根辐条），不是直接缩 `ic_ac_steering` 那条线性图标 ——
         // 线性笔画缩到 14dp 只剩不到 1dp，浅色卡片上会糊成一片。
+        //
+        // **必须是位图（drawable-nodpi 的 PNG），不能换成矢量图**：上下两行是「先设图、再染色」，
+        // 矢量 Drawable 跨进程交给桌面进程后，`setColorFilter` 在部分桌面上不生效，
+        // 图形就保持自身的黑色 —— 深色版式 / 玻璃版式的卡片上等于没画（2026-11-15 用户反馈
+        // 「公开版小组件不显示 logo」）。PNG 与 [R.drawable.ic_leap_logo] 走同一条已知可用的染色链路。
         views.setImageViewResource(
             R.id.wg_logo,
             if (PERSONAL_EDITION) R.drawable.ic_widget_logo_steering else R.drawable.ic_leap_logo,

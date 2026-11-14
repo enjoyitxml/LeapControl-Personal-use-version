@@ -137,6 +137,10 @@ def changelog_body(root: str, version: str) -> str:
 
 
 def public_notes(root: str, version: str) -> str:
+    # 正文完全由 docs/public/release-notes.md 决定。
+    # 首个公开版本（v2.4.1）用户明确要求不列更新条目，正文只有一句
+    # 「个人学习版的第一个可用版本。」；以后发版直接在这个文件里写条目即可，
+    # {{VERSION}} / {{CHANGELOG}} 两个占位符仍然可用。
     tpl = open(os.path.join(root, "docs/public/release-notes.md"), encoding="utf-8").read()
     return tpl.replace("{{VERSION}}", version).replace(
         "{{CHANGELOG}}", changelog_body(root, version))
@@ -238,6 +242,9 @@ def require_binaries(build_dir: str) -> None:
         "app/src/main/assets/shumei.dex",
         "app/src/main/jniLibs/arm64-v8a/libsmsdk.so",
         "gradle/wrapper/gradle-wrapper.jar",
+        # 公开版的车标：只有公开树里才被引用（自用版用 ic_leap_logo）。
+        # 少了它小组件车上左上角就是空白，而且要到真机才看得出来。
+        "app/src/main/res/drawable-nodpi/ic_widget_logo_steering.png",
     ]
     missing = [rel for rel in required if not os.path.isfile(os.path.join(build_dir, rel))]
     if missing:

@@ -120,9 +120,16 @@ class EditionTest {
         // 方向盘图形是专门重画的实心版，不是把 24dp 线性图标缩下来
         val drawable = File(
             root,
-            "app/src/main/res/drawable/ic_widget_logo_steering.xml",
+            "app/src/main/res/drawable-nodpi/ic_widget_logo_steering.png",
         )
         assertTrue("缺少小组件用的方向盘图形", drawable.exists())
+        // 必须是位图：RemoteViews 跨进程给 ImageView 设矢量图时，`setColorFilter` 在部分
+        // 桌面进程里不生效，黑图形落到深色 / 玻璃卡片上就等于没画（2026-11-15 真机反馈
+        // 「公开版小组件不显示 logo」）。位图与 ic_leap_logo.png 走同一条已知可用的染色链路。
+        assertFalse(
+            "车标又变回矢量了，深色版式下会被染成黑的看不见",
+            File(root, "app/src/main/res/drawable/ic_widget_logo_steering.xml").exists(),
+        )
     }
 
     @Test
