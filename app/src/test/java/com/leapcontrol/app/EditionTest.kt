@@ -101,8 +101,8 @@ class EditionTest {
     @Test
     fun `登录页在个人学习版固定方向盘且没有标语`() {
         assertTrue(
-            "登录页没按版本切 logo",
-            loginSrc.contains("val officialIcon = !PERSONAL_EDITION &&"),
+            "登录页没按版本切 logo（个人版这一支必须能常量折叠成 false，否则官方图与品牌文案会留在公开包里）",
+            loginSrc.contains("val officialIcon = if (PERSONAL_EDITION) {"),
         )
         assertTrue(
             "登录标语没按版本收起",
@@ -154,6 +154,29 @@ class EditionTest {
             File(root, "app/src/main/java/com/leapcontrol/app/ui/SupportScreen.kt").exists() &&
                 File(root, "app/src/main/res/drawable-nodpi/pay_qr_alipay.jpg").exists() &&
                 File(root, "app/src/main/res/drawable-nodpi/pay_qr_wechat.png").exists(),
+        )
+    }
+
+    @Test
+    fun `车名兜底按版本切换且只有一处定义`() {
+        assertTrue(
+            "车名兜底常量没按版本切",
+            file("app/src/main/java/com/leapcontrol/app/Edition.kt")
+                .contains("val DEFAULT_VEHICLE_TITLE: String = if (PERSONAL_EDITION) \"我的爱车\" else \"我的零跑\""),
+        )
+        // 写死的地方漏一处，个人学习版就会出现「方向盘车标 + 我的零跑」这种自相矛盾的画面
+        // （小组件标题、小组件设置页的两个预览、首页车名都吃过这个亏）
+        val writers = mapOf(
+            "小组件" to widgetSrc,
+            "小组件设置页" to ui("WidgetSettings.kt"),
+            "首页运行时" to ui("AppRuntime.kt"),
+        )
+        for ((where, src) in writers) {
+            assertFalse("$where 又把车名写死了，应改用 DEFAULT_VEHICLE_TITLE", src.contains("\"我的零跑\""))
+        }
+        assertTrue(
+            "小组件标题的兜底没走常量",
+            widgetSrc.contains("title.ifBlank { DEFAULT_VEHICLE_TITLE }"),
         )
     }
 

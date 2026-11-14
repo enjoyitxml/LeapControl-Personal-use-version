@@ -19,6 +19,7 @@ import com.leapcontrol.app.BuildConfig
 import com.leapcontrol.app.ChargingControlRules
 import com.leapcontrol.app.CarModel3DManager
 import com.leapcontrol.app.ChassisPhotoQuery
+import com.leapcontrol.app.DEFAULT_VEHICLE_TITLE
 import com.leapcontrol.app.GitHubUpdate
 import com.leapcontrol.app.HomeCardId
 import com.leapcontrol.app.HomeCardLayout
@@ -775,7 +776,7 @@ class AppRuntime(context: Context) {
 
     fun displayName(): String = customName()
         .ifEmpty { session.selectedNickname.trim() }
-        .ifEmpty { "我的零跑" }
+        .ifEmpty { DEFAULT_VEHICLE_TITLE }
 
     // 控车二次确认（应用内弹窗确认，防误触）：默认开启
     private val securityPrefs = appContext.getSharedPreferences("leapcontrol_security", Context.MODE_PRIVATE)

@@ -111,7 +111,14 @@ fun LoginScreen(
             // 只有在「个性化 → 应用图标」里切成方向盘时才显示通用方向盘图形，
             // 两处保持一致，避免桌面是一个标、进去看到另一个标。
             // 个人学习版（[PERSONAL_EDITION]）去掉全部品牌 logo，固定方向盘。
-            val officialIcon = !PERSONAL_EDITION && launcherStyle == LauncherIcon.STYLE_OFFICIAL
+            // 写成 if/else 而不是 `!PERSONAL_EDITION && …`：前者在个人版的构建里是常量
+            // `false`，R8 会把下面的官方图标分支整个折掉，「零跑汽车」这句无障碍描述
+            // 也就不会残留在公开包 dex 的字符串池里。
+            val officialIcon = if (PERSONAL_EDITION) {
+                false
+            } else {
+                launcherStyle == LauncherIcon.STYLE_OFFICIAL
+            }
             Image(
                 painter = painterResource(
                     if (officialIcon) R.drawable.login_logo else R.drawable.login_logo_steering,

@@ -35,3 +35,12 @@ const val PERSONAL_EDITION: Boolean = BuildConfig.PERSONAL_EDITION
  * **公开的包绝不允许携带能读私有仓库的令牌**。
  */
 val UPDATE_REPO: String = BuildConfig.UPDATE_REPO
+
+/**
+ * 车名兜底（用户还没给车起名时显示的那句）。
+ *
+ * 自用版是「我的零跑」；个人学习版不出现品牌名，一律叫「我的爱车」——
+ * 小组件标题、小组件设置页里的预览、首页车名都从这里取，**别再各处写死**，
+ * 否则会出现「方向盘车标配我的零跑」这种自相矛盾的画面。
+ */
+val DEFAULT_VEHICLE_TITLE: String = if (PERSONAL_EDITION) "我的爱车" else "我的零跑"

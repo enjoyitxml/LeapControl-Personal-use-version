@@ -13,6 +13,7 @@ import android.view.View
 import android.widget.RemoteViews
 import com.leapcontrol.app.ChargeStatus
 import com.leapcontrol.app.MainActivity
+import com.leapcontrol.app.DEFAULT_VEHICLE_TITLE
 import com.leapcontrol.app.PERSONAL_EDITION
 import com.leapcontrol.app.R
 import com.leapcontrol.app.tiles.QuickTiles
@@ -642,7 +643,7 @@ object VehicleWidget {
         updatedAt: Long,
         busy: String?,
         signedIn: Boolean,
-        title: String = if (PERSONAL_EDITION) "我的爱车" else "我的零跑",
+        title: String = DEFAULT_VEHICLE_TITLE,
         car: Bitmap? = null,
         widthDp: Int = 320,
         heightDp: Int = 150,
@@ -806,7 +807,7 @@ object VehicleWidget {
         updatedAt: Long,
         busy: String?,
         signedIn: Boolean,
-        title: String = if (PERSONAL_EDITION) "我的爱车" else "我的零跑",
+        title: String = DEFAULT_VEHICLE_TITLE,
         car: Bitmap? = null,
         heightDp: Int = 150,
         /** 卡片当前宽度（dp）：续航数字的格宽要按它推出的字号现量。 */
@@ -852,7 +853,7 @@ object VehicleWidget {
         sessionExpired: Boolean = false,
     ) {
         // ---- 车标 + 车名 ----
-        views.setTextViewText(R.id.wg_title, title.ifBlank { "我的零跑" })
+        views.setTextViewText(R.id.wg_title, title.ifBlank { DEFAULT_VEHICLE_TITLE })
         views.setTextColor(R.id.wg_title, p.ink)
 
         // ---- 状态 / 更新时间（卡片右上角）----

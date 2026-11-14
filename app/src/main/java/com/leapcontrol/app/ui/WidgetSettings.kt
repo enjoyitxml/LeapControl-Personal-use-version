@@ -59,6 +59,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.leapcontrol.app.DEFAULT_VEHICLE_TITLE
 import com.leapcontrol.app.widget.VehicleWidget
 import com.leapcontrol.app.widget.WidgetButtonLayout
 import com.leapcontrol.app.widget.WidgetMetrics
@@ -799,7 +800,7 @@ private fun WidgetFinePreview(iconScale: Float, headerScale: Float, logoScale: F
             }
             Spacer(Modifier.width(4.dp))
             Text(
-                text = "我的零跑",
+                text = DEFAULT_VEHICLE_TITLE,
                 color = C.textPrimary,
                 fontSize = 11.sp,
                 maxLines = 1,
@@ -875,7 +876,7 @@ private fun WidgetInfoPreview(infoScale: Float) {
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                text = "我的零跑",
+                text = DEFAULT_VEHICLE_TITLE,
                 color = C.textPrimary,
                 fontSize = num,
                 fontWeight = FontWeight.SemiBold,

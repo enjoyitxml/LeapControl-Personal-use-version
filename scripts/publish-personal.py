@@ -174,6 +174,23 @@ def public_gradle_properties(src: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def patched_manifest(src: str) -> str:
+    """把停用中的「官方 logo」alias 的图标换成方向盘那一套。
+
+    alias 本身是关着的（个人学习版只启用方向盘），但它的 `android:icon` 会把
+    `@mipmap/ic_launcher_official*` 钉成「被引用」，资源压缩就不敢删 ——
+    结果公开包里仍然躺着零跑官方图标。换成方向盘那两张之后，官方图标没有任何引用，
+    构建时会被 `shrinkResources` 一并剔掉（2026-11-15 实测：改完 APK 里只剩方向盘）。
+    """
+    out = src.replace('android:icon="@mipmap/ic_launcher_official"',
+                      'android:icon="@mipmap/ic_launcher"')
+    out = out.replace('android:roundIcon="@mipmap/ic_launcher_official_round"',
+                      'android:roundIcon="@mipmap/ic_launcher_round"')
+    if out == src:
+        raise Fail("清单里的官方图标引用没找到，替换规则可能过时了")
+    return out
+
+
 def build_tree(root: str, tmp: str) -> str:
     """用临时 index 组装公开版 tree，返回 tree sha。工作区不受影响。"""
     index = os.path.join(tmp, "index")
@@ -190,6 +207,8 @@ def build_tree(root: str, tmp: str) -> str:
     put("gradle.properties", public_gradle_properties(
         open(os.path.join(root, "gradle.properties"), encoding="utf-8").read()))
     put("README.md", public_readme(root, version_of(root)))
+    put("app/src/main/AndroidManifest.xml", patched_manifest(
+        open(os.path.join(root, "app/src/main/AndroidManifest.xml"), encoding="utf-8").read()))
     for rel in WIDGET_LAYOUTS:
         put(rel, patched_widget_layout(open(os.path.join(root, rel), encoding="utf-8").read()))
 
@@ -219,6 +238,8 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="只组装 tree，不推送")
     ap.add_argument("--no-build", action="store_true", help="跳过构建（复用已有 APK）")
     ap.add_argument("--no-release", action="store_true", help="只推代码，不建 Release")
+    ap.add_argument("--build-only", action="store_true",
+                    help="只按公开版源码构建，不推送（用来先检查 APK 里的资源）")
     ap.add_argument("--create-repo", action="store_true", help="仓库不存在时先创建（公开）")
     args = ap.parse_args()
 
@@ -278,6 +299,10 @@ def main() -> int:
             shutil.copy2(built, apk_src)
         if not os.path.exists(apk_src):
             raise Fail(f"没有可用的 APK：{apk_src}")
+
+        if args.build_only:
+            print(f"ℹ️  只构建，未推送：{apk_src}")
+            return 0
 
         # ---- 推送 ----
         env = {k: v for k, v in os.environ.items()
