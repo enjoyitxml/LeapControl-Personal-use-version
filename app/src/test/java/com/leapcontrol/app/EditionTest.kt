@@ -117,7 +117,8 @@ class EditionTest {
             "小组件车标没按版本切",
             widgetSrc.contains("if (PERSONAL_EDITION) R.drawable.ic_widget_logo_steering else R.drawable.ic_leap_logo"),
         )
-        // 方向盘图形是专门重画的实心版，不是把 24dp 线性图标缩下来
+        // 方向盘直接用 App 里现成的那张（登录页同款 login_logo_steering.png），
+        // 只裁掉四周留白再等比缩，线条不另行绘制、不做加粗。
         val drawable = File(
             root,
             "app/src/main/res/drawable-nodpi/ic_widget_logo_steering.png",
