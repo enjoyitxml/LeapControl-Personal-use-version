@@ -1,0 +1,393 @@
+package com.leapcontrol.app.ui
+
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Paint
+import androidx.compose.ui.graphics.drawscope.CanvasDrawScope
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
+
+/**
+ * 场景画面覆盖的高度：从屏幕顶端（含状态栏）到空调控件上沿。
+ *
+ * 首页到空调卡之前的内容大致是：状态栏 + 车名/续航/充电中心 176dp + 车模 200dp +
+ * 快捷控车 ~80dp，再留一点余量。场景在这个高度上画完，往下已经淡到看不见。
+ */
+internal val SCENE_HEIGHT = 508.dp
+
+/**
+ * 动态场景的循环周期：慢一点才有氛围，快了像故障。
+ */
+private const val SCENE_CYCLE_MS = 24_000f
+
+/**
+ * 动态场景的帧间隔：`0` = 不节流，每个 VSYNC 都推进，跟屏幕刷新率走。
+ *
+ * 这里以前是 33ms（约 30fps），理由是「云和星漂得很慢，30fps 看不出来，还能省一半绘制」。
+ * 但省下的绘制时间根本没落到用户手上：系统的动态刷新率会盯着应用出帧的节奏判断该给多少 Hz，
+ * 一个稳定每 33ms 出一帧的界面会被判成「只需 30Hz」，VSYNC 随即降到 30；用户一滑动、
+ * 需要高帧了，又立刻提到 120。于是刷新率在 30 与 120 之间来回横跳，每次切换系统都要
+ * 重同步 VSYNC，滚动节奏就在那一瞬间断掉 —— 这正是「画面一直在 30 和 120 之间跳」的来源。
+ *
+ * **不要再改回 33ms。** 要省电就关掉动态主题（静态主题本来就是烘一张位图，零成本），
+ * 而不是让画面一顿一顿地动。
+ */
+private const val SCENE_FRAME_INTERVAL_NS = 0L
+
+/** 静态场景的固定相位（0.08 能让云/花瓣/星点落在比较自然的位置）。 */
+private const val STATIC_PHASE = 0.08f
+
+/**
+ * 主题场景层。
+ *
+ * 只画在页面上半部分（[SCENE_HEIGHT]），并做两重衰减保证不挡内容：
+ *  1. 场景自身用 `BlendMode.DstIn` 蒙一层竖向渐变，从 30% 处开始变淡、到底完全消失；
+ *  2. 上层再叠一层很淡的雾（MainScreen 里的椭圆遮罩），把车名小字压稳。
+ *
+ * 性能上有三条约定，改动时别破坏：
+ *  · 动画进度只在 **draw 阶段**读取，不触发 recomposition；
+ *  · `Paint` / 淡出 `Brush` / 图层边界放在 [drawWithCache] 里，只在尺寸变化时重建，
+ *    而不是每帧新建一遍；
+ *  · [animate] 传 false（不在首页主界面 / 进后台 / 正在滑动）时**停在当前相位**，
+ *    不做动画但也不跳回起点 —— 从静止恢复成动态时画面是接上的，不会闪一下。
+ */
+@Composable
+fun ThemeBackdrop(
+    theme: SeasonTheme,
+    dark: Boolean,
+    animate: Boolean,
+    modifier: Modifier = Modifier,
+    sceneHeight: Dp = SCENE_HEIGHT,
+    /**
+     * 顶部雾化遮罩（通常是 MainScreen 那个以车模为圆心的椭圆）。
+     * 传进来一起参与下面的淡出蒙层，遮罩才会和场景同步消失；
+     * 单独在场景外面叠一层的话，会在场景底边留下一道硬边。
+     */
+    veilBrush: Brush? = null,
+) {
+    if (theme.scene == SceneKind.NONE) return
+
+    val phase = rememberScenePhase(theme = theme, animate = animate)
+    // 配色只跟主题有关，别在每帧绘制时重新构造
+    val palette = remember(theme) { theme.palette() }
+    val scene = theme.scene
+    val density = LocalDensity.current
+    // 静态场景的烘焙缓存：画一遍存成位图，之后每次绘制只是一次贴图。
+    // key 里带上 veilBrush，换了主题 / 雾色就会重烘一张。
+    val bake = remember(theme, dark, veilBrush) { SceneBake() }
+    /**
+     * 能不能烘焙。
+     *
+     * 静态场景每一帧画出来都完全一样，提前画好没有任何视觉差异，恒可烘。
+     *
+     * 动态场景平时不能烘（相位一直在推进，烘了画面就钉死了）。但**滑动 / 不在前台时
+     * `animate` 为 false，相位已经停住**，此刻画面同样是静止的 —— 这时候就该烘：
+     * 否则用户一滑动，实时路径每帧都要开一块 508dp 全宽的离屏缓冲（约 6MB）再重画整幅场景，
+     * 和滚动抢的正是这份显存带宽。恢复动画时 `animate` 变回 true，本值自动变回 false，
+     * 重新走实时绘制。
+     */
+    val bakeable = !theme.animated || !animate
+
+    // 当前测量到的尺寸：只在布局真的变了时写一次，滚动期间一动不动。
+    var measured by remember { mutableStateOf(IntSize.Zero) }
+    // 烘焙结果。在**绘制阶段**读它 —— 变的是「画什么」，不牵动组合与布局。
+    var bakedImage by remember(theme, dark, veilBrush) { mutableStateOf<ImageBitmap?>(null) }
+
+    /*
+     * 烘焙放后台线程做，绝不占 UI 线程的任何一帧。
+     *
+     * 这一步以前写在 drawWithCache 的绘制块里。问题是「能不能烘」要到绘制时才知道
+     * （`animate` 是组合期快照），于是**第一次滑动的那一帧**得把整幅场景 CPU 光栅化一遍
+     * （508dp 全宽，渐变 + 雾化 + 蒙层），实测就是「一上手先顿一下、之后才顺」——
+     * 而那一帧恰好是手指刚按下去的时候，最不能卡。
+     *
+     * 现在：这一帧照常用实时路径画（和优化前一样，不额外多花），同时后台把图烘出来，
+     * 下一帧开始换成贴图，之后整个滑动期间这一层只剩一次纹理采样。
+     *
+     * 相位只在 `animate == false` 时停住，所以这里读到的一定是「冻结的那一帧」；
+     * 滑过一次再滑，相位还是同一个值，直接命中缓存，不会重复烘。
+     */
+    LaunchedEffect(bakeable, measured, bake) {
+        if (!bakeable || bake.failed) return@LaunchedEffect
+        val w = measured.width
+        val h = measured.height
+        if (w <= 0 || h <= 0) return@LaunchedEffect
+        val frozen = phase.value
+        if (bake.matches(w, h, frozen)) {
+            if (bakedImage !== bake.image) bakedImage = bake.image
+            return@LaunchedEffect
+        }
+        val img = runCatching {
+            withContext(Dispatchers.Default) {
+                renderSceneBitmap(w, h, density) {
+                    paintScene(scene, frozen, palette)
+                    if (veilBrush != null) drawRect(brush = veilBrush)
+                    drawRect(brush = SCENE_FADE_BRUSH, blendMode = BlendMode.DstIn)
+                }
+            }
+        }.getOrNull()
+        if (img == null) {
+            // 烘不出来（极端尺寸 / 显存不够）不能连累 App：标一次失败，以后都走实时绘制
+            bake.failed = true
+            return@LaunchedEffect
+        }
+        bake.image = img
+        bake.width = w
+        bake.height = h
+        bake.phase = frozen
+        bakedImage = img
+    }
+
+    Spacer(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(sceneHeight)
+            .onSizeChanged { if (it != measured) measured = it }
+            .drawWithCache {
+                // 实时路径要用的东西只在尺寸变化时建一次，别每帧 new
+                val layerPaint = Paint()
+                val layerBounds = Rect(0f, 0f, size.width, size.height)
+                onDrawBehind {
+                    val baked = bakedImage
+                    // 尺寸对不上（刚转过屏）就先走实时路径，等后台烘好再换过来
+                    if (baked != null && bakeable &&
+                        baked.width == size.width.roundToInt() &&
+                        baked.height == size.height.roundToInt()
+                    ) {
+                        drawImage(image = baked, dstSize = IntSize(baked.width, baked.height))
+                    } else {
+                        drawIntoCanvas { canvas ->
+                            canvas.saveLayer(layerBounds, layerPaint)
+                            paintScene(scene, phase.value, palette)
+                            if (veilBrush != null) drawRect(brush = veilBrush)
+                            drawRect(brush = SCENE_FADE_BRUSH, blendMode = BlendMode.DstIn)
+                            canvas.restore()
+                        }
+                    }
+                }
+            },
+    )
+}
+
+/**
+ * 场景底边的淡出蒙层。
+ *
+ * 渐变按比例铺，与像素尺寸无关，所以整个 App 建一份就够 —— 以前每个组合（甚至每次
+ * 缓存失效）都要重造一遍 Brush 和里面的 6 个 Color。
+ */
+private val SCENE_FADE_BRUSH = Brush.verticalGradient(
+    0.00f to Color.White,
+    0.30f to Color.White,
+    0.52f to Color.White.copy(alpha = 0.60f),
+    0.74f to Color.White.copy(alpha = 0.22f),
+    0.90f to Color.White.copy(alpha = 0.06f),
+    1.00f to Color.Transparent,
+)
+
+/** 静态场景的烘焙缓存：尺寸与相位都没变就一直复用同一张图。 */
+private class SceneBake {
+    var image: ImageBitmap? = null
+    var width = 0
+    var height = 0
+
+    /**
+     * 烘焙时用的场景相位。
+     *
+     * 动态主题在滑动时冻结在某一帧上烘焙，下次停在别的相位就得重烘一张 ——
+     * 所以相位必须参与比对，不能只比尺寸，否则会把上一帧的画面留在屏幕上。
+     */
+    var phase = Float.NaN
+
+    /** 烘过一次失败就不再重试，直接走实时绘制，免得每帧都抛一次异常。 */
+    var failed = false
+
+    fun matches(w: Int, h: Int, p: Float): Boolean =
+        image != null && width == w && height == h && phase == p
+}
+
+/**
+ * 把一段 [DrawScope] 绘制烘焙成一张 ARGB_8888 位图。
+ *
+ * 位图本身就是一块透明的离屏画布，所以 `DstIn` 淡出可以直接叠在上面，
+ * 不需要再套一层 `saveLayer` —— 这也是烘焙能省掉每帧离屏分配的原因。
+ */
+private fun renderSceneBitmap(
+    width: Int,
+    height: Int,
+    density: Density,
+    draw: DrawScope.() -> Unit,
+): ImageBitmap {
+    val bitmap = ImageBitmap(width, height)
+    val canvas = androidx.compose.ui.graphics.Canvas(bitmap)
+    CanvasDrawScope().draw(
+        density = density,
+        layoutDirection = LayoutDirection.Ltr,
+        canvas = canvas,
+        size = androidx.compose.ui.geometry.Size(width.toFloat(), height.toFloat()),
+    ) { draw() }
+    return bitmap
+}
+
+/**
+ * 自定义壁纸层：把用户上传的图铺满整页。
+ *
+ * 只有当前生效主题是「我的壁纸」时才画（[enabled]），其余 40 套仍然走
+ * [ThemeBackdrop] 那套实时绘制的场景 —— 两条路互不干扰。
+ *
+ * 上面必须叠一层薄纱（[wallpaperVeil]）：壁纸内容完全不可控，浅色壁纸配深色字还行，
+ * 一张夜景配深色字就全糊了。这层纱同时承担「把图压淡一点，别抢卡片内容」的作用。
+ *
+ * 解码走 AppRuntime 的缓存：切 Tab 回来是同一张 Bitmap，不会每次都重新解码 10MB。
+ */
+@Composable
+fun CustomWallpaperLayer(
+    runtime: AppRuntime,
+    dark: Boolean,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    if (!enabled) return
+
+    val kind = if (dark) CustomBackdropKind.WALLPAPER_NIGHT else CustomBackdropKind.WALLPAPER_DAY
+    // 读版本号：换图 / 删图后版本变化，才会重新解码
+    val state = runtime.customBackdrop.value
+    val version = state.versionOf(kind)
+    // 首帧先吃缓存，避免「已经设过壁纸」的机器切页回来闪一帧渐变
+    var bitmap by remember(version, kind, state.revision) {
+        mutableStateOf(runtime.cachedCustomBackdrop(kind)?.asImageBitmap())
+    }
+    LaunchedEffect(version, kind, state.revision) {
+        bitmap = if (version == 0L) null else runtime.customBackdrop(kind)?.asImageBitmap()
+    }
+
+    val image = bitmap ?: return
+    Box(modifier = modifier.fillMaxSize()) {
+        Image(
+            bitmap = image,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize(),
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        // 顶部轻一点，让壁纸「天空」那块透出来；往下越来越重，
+                        // 因为下半屏是卡片区，文字密度最高
+                        0.00f to (if (dark) Color.Black else Color.White).copy(alpha = if (dark) 0.42f else 0.30f),
+                        0.45f to (if (dark) Color.Black else Color.White).copy(alpha = if (dark) 0.54f else 0.44f),
+                        1.00f to (if (dark) Color.Black else Color.White).copy(alpha = if (dark) 0.66f else 0.60f),
+                    ),
+                ),
+        )
+    }
+}
+
+/**
+ * 主题缩略图：渐变底 + 场景（固定相位、不淡出），用在个性化页的选择网格里。
+ *
+ * 和真实背景共用同一个 [paintScene]，所以缩略图看到的就是首页会看到的东西。
+ */
+@Composable
+fun ThemeSwatch(
+    theme: SeasonTheme,
+    dark: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val palette = remember(theme) { theme.palette() }
+    val gradient = remember(theme.id, dark) { Brush.verticalGradient(theme.gradient(dark)) }
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(gradient),
+    ) {
+        if (theme.scene != SceneKind.NONE) {
+            Canvas(Modifier.fillMaxSize()) {
+                paintScene(theme.scene, STATIC_PHASE, palette)
+            }
+        }
+    }
+}
+
+/**
+ * 相位推进：按经过的纳秒把 0~1 的循环进度往前推，结果始终落在 `[0, 1)`。
+ *
+ * 单独抽成纯函数是为了能单测：循环动画最容易在「刚好走完一圈」和「跨过 1.0」这两个
+ * 边界上出岔子（浮点误差累积成负相位、或越界到 1.x 让场景跳一下）。
+ *
+ * @param current 当前相位
+ * @param deltaNanos 距上次绘制的纳秒数；非正数（时钟异常）时原样返回，不推进
+ */
+internal fun advanceScenePhase(current: Float, deltaNanos: Long): Float =
+    advanceLoopPhase(current, deltaNanos, SCENE_CYCLE_MS.toInt())
+
+/**
+ * 场景动画进度。
+ *
+ * 手写推进而不用 `rememberInfiniteTransition`，原因是 [animate] 变 false 时能停在当前相位，
+ * 而不是被重置回起点；进后台时 Compose 的帧时钟本身会停，也不需要额外处理。
+ *
+ * 推进跟 VSYNC 走，不做帧率节流 —— 节流会让系统把整个界面判成低帧率、进而反复切刷新率，
+ * 详见 [SCENE_FRAME_INTERVAL_NS]。
+ *
+ * @return 0~1 的循环进度；非动态主题返回固定相位（静态场景不读它）。
+ */
+@Composable
+private fun rememberScenePhase(theme: SeasonTheme, animate: Boolean): State<Float> {
+    if (!theme.animated) return remember { mutableStateOf(STATIC_PHASE) }
+
+    // 相位跨主题切换保留，换主题时画面不会又从 0 开始
+    val phase = remember { mutableFloatStateOf(STATIC_PHASE) }
+    LaunchedEffect(animate) {
+        if (!animate) return@LaunchedEffect
+        var lastFrameNs = 0L
+        while (true) {
+            withFrameNanos { now ->
+                if (lastFrameNs == 0L) {
+                    lastFrameNs = now
+                } else if (SCENE_FRAME_INTERVAL_NS <= 0L || now - lastFrameNs >= SCENE_FRAME_INTERVAL_NS) {
+                    phase.floatValue = advanceScenePhase(phase.floatValue, now - lastFrameNs)
+                    lastFrameNs = now
+                }
+            }
+        }
+    }
+    return phase
+}

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  桌面小组件元信息：5×2 宽版。
+
+  为什么单独一份：安卓「添加小部件」列表里，一个 receiver + 一份 provider-info
+  只对应一个固定格数，想让 5 列的桌面铺满一行，只能多注册一个入口。
+  逻辑与 4×2 完全共用（VehicleWidgetProviderWide 一行方法都没重写）。
+
+  minWidth / minHeight 用官方公式 70×n-30：5 列 → 320dp，2 行 → 110dp。
+  targetCellWidth 才是桌面真正参考的值（API 31+），minWidth 是给旧桌面的兜底。
+  minResizeWidth 收到 280dp：宽版续航行的固定开销是「图标 15 + 里程列 52
+  + 百分比列 34 + 间距 9」≈ 110dp（间距 = 里程列左 2 + 里程与条之间 5 + 条右 2），
+  按 1.1 / 2.3 的信息区权重，卡片窄于约 270dp 时信息区就装不下这一行，
+  百分比会被压成一个字符宽。280dp 留了 10dp 余量。
+
+  updatePeriodMillis 同样设 0：定时联网只会反复唤醒车上 T-Box。
+-->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/widget_description_wide"
+    android:initialLayout="@layout/widget_a_wide"
+    android:minHeight="110dp"
+    android:minResizeHeight="96dp"
+    android:minResizeWidth="280dp"
+    android:minWidth="320dp"
+    android:previewLayout="@layout/widget_a_wide"
+    android:resizeMode="horizontal|vertical"
+    android:targetCellHeight="2"
+    android:targetCellWidth="5"
+    android:updatePeriodMillis="0"
+    android:widgetCategory="home_screen" />

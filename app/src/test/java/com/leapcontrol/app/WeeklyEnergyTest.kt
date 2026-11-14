@@ -1,0 +1,279 @@
+package com.leapcontrol.app
+
+import org.json.JSONArray
+import org.json.JSONObject
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
+import org.junit.Test
+import java.time.LocalDate
+
+/** 两张能耗卡的解析与格式化（近 6 周百公里能耗 / 上周能耗构成）。 */
+class WeeklyEnergyTest {
+
+    private fun rankResponse(rank: Any, average: Any, weeks: JSONArray) = JSONObject()
+        .put("result", "0")
+        .put(
+            "data",
+            JSONObject()
+                .put("rankResult", JSONObject().put("hundredKmEC", average).put("rank", rank))
+                .put("weeklyEC", weeks),
+        )
+
+    private fun compositionResponse(driver: Any?, ac: Any?, other: Any?) = JSONObject()
+        .put("code", 200)
+        .put(
+            "data",
+            JSONObject().apply {
+                driver?.let { put("driverEC", it) }
+                ac?.let { put("acEC", it) }
+                other?.let { put("otherEC", it) }
+            },
+        )
+
+    @Test
+    fun `近6周能耗读出平均值排行与每周点位`() {
+        val weeks = JSONArray().apply {
+            put(JSONObject().put("weekStart", "2026-09-21").put("weekEnd", "2026-09-27").put("hundredKmEC", 11.2))
+            put(JSONObject().put("weekStart", "2026-10-19").put("weekEnd", "2026-10-25").put("hundredKmEC", 13.6))
+        }
+        val rank = WeeklyEnergyParser.parseRank(rankResponse("91%", 13.6, weeks))
+        assertEquals(13.6, rank.averageEc!!, 0.001)
+        assertEquals("91%", rank.rankPercent)
+        assertEquals(2, rank.weeks.size)
+        assertEquals("2026-09-21", rank.weeks.first().weekStart)
+        assertEquals(11.2, rank.weeks.first().hundredKmEc, 0.001)
+    }
+
+    @Test
+    fun `缺 weekEnd 的点也保留`() {
+        val weeks = JSONArray().apply {
+            put(JSONObject().put("weekStart", "2026-10-19").put("hundredKmEC", 13.6))
+        }
+        val rank = WeeklyEnergyParser.parseRank(rankResponse("91", 13.6, weeks))
+        assertEquals(1, rank.weeks.size)
+        assertNull(rank.weeks.first().weekEnd)
+    }
+
+    @Test
+    fun `排行百分数归一化`() {
+        assertEquals("91%", WeeklyEnergyParser.normalizeRank("91"))
+        assertEquals("91%", WeeklyEnergyParser.normalizeRank(" 91% "))
+        assertEquals("91%", WeeklyEnergyParser.normalizeRank("0.91"))
+        assertEquals("91.5%", WeeklyEnergyParser.normalizeRank("91.5%"))
+        assertNull(WeeklyEnergyParser.normalizeRank(""))
+        assertNull(WeeklyEnergyParser.normalizeRank("暂无"))
+    }
+
+    @Test
+    fun `业务码非0时抛异常`() {
+        val response = JSONObject().put("result", "500").put("data", JSONObject())
+        assertThrows(WeeklyEnergyException::class.java) {
+            WeeklyEnergyParser.parseRank(response)
+        }
+    }
+
+    @Test
+    fun `排行接口字段全空时抛异常`() {
+        val response = rankResponse("", "", JSONArray())
+        assertThrows(WeeklyEnergyException::class.java) {
+            WeeklyEnergyParser.parseRank(response)
+        }
+    }
+
+    @Test
+    fun `上周能耗构成读出三项`() {
+        val composition = WeeklyEnergyParser.parseComposition(
+            compositionResponse(9.8, 0.1, 0.8),
+        )
+        assertEquals(3, composition.slices.size)
+        assertEquals("行车", composition.slices[0].label)
+        assertEquals(9.8, composition.slices[0].kwh, 0.001)
+        assertEquals("空调", composition.slices[1].label)
+        assertEquals("其他", composition.slices[2].label)
+        assertEquals(10.7, composition.totalKwh, 0.001)
+    }
+
+    @Test
+    fun `缺一项时按剩余项求和`() {
+        val composition = WeeklyEnergyParser.parseComposition(
+            compositionResponse(9.8, null, 0.8),
+        )
+        assertEquals(2, composition.slices.size)
+        assertEquals(10.6, composition.totalKwh, 0.001)
+    }
+
+    @Test
+    fun `占比按最大余数法凑满100`() {
+        // 官方截图里的真实数字：9.8 / 0.1 / 0.8 → 92% / 1% / 7%
+        assertEquals(listOf(92, 1, 7), EnergyFormat.percentInts(listOf(9.8, 0.1, 0.8)))
+        // 三项各占三分之一：33 + 33 + 34 才等于 100
+        val thirds = EnergyFormat.percentInts(listOf(1.0, 1.0, 1.0))
+        assertEquals(100, thirds.sum())
+    }
+
+    @Test
+    fun `总量为0时占比全0`() {
+        assertEquals(listOf(0, 0, 0), EnergyFormat.percentInts(listOf(0.0, 0.0, 0.0)))
+    }
+
+    @Test
+    fun `周末标签取月日`() {
+        assertEquals("9/21", EnergyFormat.weekLabel("2026-09-21"))
+        assertEquals("10/19", EnergyFormat.weekLabel("2026/10/19"))
+        assertEquals("10/19", EnergyFormat.weekLabel("10-19"))
+        assertEquals("--", EnergyFormat.weekLabel(null))
+    }
+
+    @Test
+    fun `上周区间按周一到周日倒推`() {
+        // 2026-10-31 是周六，本周一是 10-26，上周即 10-19 ~ 10-25
+        assertEquals(
+            "10.19 – 10.25",
+            EnergyFormat.lastWeekRange(LocalDate.of(2026, 10, 31)),
+        )
+        // 周日属于「这一周的最后一天」，不能再往前推一周
+        assertEquals(
+            "10.19 – 10.25",
+            EnergyFormat.lastWeekRange(LocalDate.of(2026, 11, 1)),
+        )
+        // 周一当天：上一周刚结束
+        assertEquals(
+            "10.19 – 10.25",
+            EnergyFormat.lastWeekRange(LocalDate.of(2026, 10, 26)),
+        )
+        // 跨年：2027-01-04（周一）的上一周是 2026-12-28 ~ 2027-01-03
+        assertEquals(
+            "12.28 – 1.3",
+            EnergyFormat.lastWeekRange(LocalDate.of(2027, 1, 6)),
+        )
+    }
+
+    @Test
+    fun `周柱标签取这一周的周日`() {
+        // 服务端只给完整自然周：10-19（周一）~10-25（周日）这一周，标签必须写 10/25，
+        // 否则 10-30 打开首页，最后一根柱下面写着 10/19，看着像半个月没更新。
+        assertEquals("10/25", EnergyFormat.weekTick("2026-10-19", "2026-10-25"))
+        // weekEnd 缺失时按 weekStart + 6 天算
+        assertEquals("10/25", EnergyFormat.weekTick("2026-10-19", null))
+        // weekEnd 若是右开区间（给 10-26），仍然要落在 10/25
+        assertEquals("10/25", EnergyFormat.weekTick("2026-10-19", "2026-10-26"))
+        // 跨月
+        assertEquals("10/4", EnergyFormat.weekTick("2026-09-28", "2026-10-04"))
+        // 跨年
+        assertEquals("1/3", EnergyFormat.weekTick("2026-12-28", "2027-01-03"))
+        // weekStart 解析不出来时退回 weekEnd
+        assertEquals("10/25", EnergyFormat.weekTick("第一周", "2026-10-25"))
+        // 都给不出可用日期时保持原样，不崩
+        assertEquals("--", EnergyFormat.weekTick(null, null))
+    }
+
+    @Test
+    fun `横轴最近一周写上周而不是具体日期`() {
+        // 今天 2026-10-31（周六）→ 最近一个完整周是 10/19 ~ 10/25，那一根写「上周」
+        val now = LocalDate.of(2026, 10, 31)
+        assertEquals(
+            "上周",
+            EnergyFormat.weekAxisLabel("2026-10-19", "2026-10-25", isLast = true, now = now),
+        )
+        // 其余各根仍是日期，不受影响
+        assertEquals(
+            "10/18",
+            EnergyFormat.weekAxisLabel("2026-10-12", "2026-10-18", isLast = false, now = now),
+        )
+    }
+
+    @Test
+    fun `数据滞后时最后一根不冒充上周`() {
+        // 接口晚一天出数，最后一根还停在 10/18：这时标「上周」会让人以为数据是新的。
+        // 宁可如实写日期，让它自己暴露「只到 10/18」
+        val now = LocalDate.of(2026, 10, 31)
+        assertEquals(
+            "10/18",
+            EnergyFormat.weekAxisLabel("2026-10-12", "2026-10-18", isLast = true, now = now),
+        )
+    }
+
+    @Test
+    fun `跨年时上周的判定按周一到周日`() {
+        // 2027-01-02（周六）→ 上周是 2026-12-21 ~ 12-27
+        val now = LocalDate.of(2027, 1, 2)
+        assertEquals(
+            "上周",
+            EnergyFormat.weekAxisLabel("2026-12-21", "2026-12-27", isLast = true, now = now),
+        )
+        // 跨年那一周（12/28 ~ 1/3）还没结束，不能算上周，照常写日期
+        assertEquals(
+            "1/3",
+            EnergyFormat.weekAxisLabel("2026-12-28", "2027-01-03", isLast = true, now = now),
+        )
+    }
+
+    @Test
+    fun `只有一根数据时也算上周`() {
+        val now = LocalDate.of(2026, 10, 31)
+        assertEquals(
+            "上周",
+            EnergyFormat.weekAxisLabel("2026-10-19", null, isLast = true, now = now),
+        )
+    }
+
+    @Test
+    fun `日期解析不出来时不强行写上周`() {
+        val now = LocalDate.of(2026, 10, 31)
+        assertEquals("第一周", EnergyFormat.weekAxisLabel("第一周", null, isLast = true, now = now))
+        assertEquals("--", EnergyFormat.weekAxisLabel(null, null, isLast = true, now = now))
+    }
+
+    @Test
+    fun `车型名去掉品牌前缀`() {
+        assertEquals("C11", EnergyFormat.carModelName("零跑C11"))
+        assertEquals("C11", EnergyFormat.carModelName("C11"))
+        assertEquals("零跑", EnergyFormat.carModelName(""))
+        assertEquals("零跑", EnergyFormat.carModelName("零跑"))
+    }
+
+    @Test
+    fun `内部代号折回宣传名`() {
+        // Lafa5 的车辆接口下发的是项目代号 B05，不能直接显示给车主
+        assertEquals("Lafa5", EnergyFormat.carModelName("B05"))
+        assertEquals("Lafa5", EnergyFormat.carModelName("b05"))
+        assertEquals("Lafa5", EnergyFormat.carModelName("零跑B05"))
+        assertEquals("Lafa5", EnergyFormat.carModelName("LAFA5"))
+        // 未知代号原样显示，不做猜测
+        assertEquals("B10", EnergyFormat.carModelName("B10"))
+    }
+
+    @Test
+    fun `能耗数值一位小数`() {
+        assertEquals("9.8", EnergyFormat.kwh(9.8))
+        assertEquals("13.6", EnergyFormat.kwh(13.64))
+        assertEquals("--", EnergyFormat.kwh(null))
+    }
+
+    @Test
+    fun `磁盘缓存往返不丢字段`() {
+        val data = WeeklyEnergyData(
+            rank = WeeklyEnergyRank(
+                averageEc = 13.6,
+                rankPercent = "91%",
+                weeks = listOf(
+                    WeeklyEnergyPoint("2026-10-19", "2026-10-25", 13.6),
+                ),
+            ),
+            composition = EnergyComposition(
+                listOf(EnergySlice("行车", 9.8), EnergySlice("空调", 0.1), EnergySlice("其他", 0.8)),
+            ),
+            capturedAt = 12345L,
+        )
+        val restored = WeeklyEnergyData.fromJson(JSONObject(data.toJson().toString()))
+        assertNotNull(restored)
+        assertEquals("91%", restored!!.rank!!.rankPercent)
+        assertEquals(1, restored.rank!!.weeks.size)
+        assertEquals(13.6, restored.rank!!.weeks.first().hundredKmEc, 0.001)
+        assertEquals(3, restored.composition!!.slices.size)
+        assertEquals(10.7, restored.composition!!.totalKwh, 0.001)
+        assertEquals(12345L, restored.capturedAt)
+    }
+}

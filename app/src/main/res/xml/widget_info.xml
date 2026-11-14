@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  桌面小组件元信息：4×2。
+  minWidth / minHeight 用官方公式 70×n-30：4 列 → 250dp，2 行 → 110dp。
+  updatePeriodMillis 故意设 0：定时联网只会反复唤醒车上 T-Box。
+  卡片由「App 内刷新」「点按键」「添加 / 改尺寸」触发重画，其余时候显示上次车况并标更新时间。
+
+  minResizeWidth 从 180dp 收到与 minWidth 相同的 250dp：
+  续航行现在是「图标 15 + 里程列 46 + 百分比列 34 + 间距 9」≈ 104dp 的固定开销
+  （间距 = 里程列左 2 + 里程与条之间 5 + 条右 2），
+  再窄于 250dp 时信息区只剩 75dp 左右，LinearLayout 会把百分比压成一个字符宽 ——
+  也就是 2026-11-09 那个「92% 变 9」的 bug 换个尺寸复发。
+  缩到 250dp 既是 4 列卡片的标准宽，也刚好让这一行放得下。
+-->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/widget_description"
+    android:initialLayout="@layout/widget_a"
+    android:minHeight="110dp"
+    android:minResizeHeight="96dp"
+    android:minResizeWidth="250dp"
+    android:minWidth="250dp"
+    android:previewLayout="@layout/widget_a"
+    android:resizeMode="horizontal|vertical"
+    android:targetCellHeight="2"
+    android:targetCellWidth="4"
+    android:updatePeriodMillis="0"
+    android:widgetCategory="home_screen" />

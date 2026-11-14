@@ -1,0 +1,2802 @@
+package com.leapcontrol.app
+
+import com.leapcontrol.app.bluetooth.BleKeyCertificate
+import com.leapcontrol.app.bluetooth.BleCloudApiModels
+import com.leapcontrol.app.bluetooth.BleCloudRequestScope
+import com.leapcontrol.app.bluetooth.BlePassiveConfiguration
+import com.leapcontrol.app.bluetooth.BleVehicleMetadata
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
+import java.net.URLEncoder
+import java.util.Locale
+import java.util.concurrent.TimeUnit
+import java.util.zip.ZipInputStream
+import okhttp3.FormBody
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+
+class ApiException(message: String, val httpStatus: Int? = null, val durationMs: Long? = null, val retryCount: Int = 0, val stage: String = "api") : Exception(message)
+
+/**
+ * 零跑中国 App 云接口客户端（阻塞式，请在后台线程调用）。
+ * 协议移植自 leap-cn-mcp 的 leapmotor-cn-sdk.js。
+ */
+class LeapmotorApi internal constructor(
+    private val session: Session,
+    private val deviceFingerprintProvider: () -> String,
+    private val loginRequestExecutor: (Request) -> VehicleListRawResponse
+) {
+    constructor(session: Session) : this(
+        session,
+        { ShumeiSecurityManager.requireDeviceId() },
+        { request ->
+            NetworkDebugController.httpClient().newCall(request).execute().use { response ->
+                VehicleListRawResponse(response.code, response.body?.string().orEmpty())
+            }
+        }
+    )
+
+    companion object {
+        /**
+         * 控车下发被网关以「鉴权」为由拒绝时的 stage 标记。
+         *
+         * 与普通业务失败分开：只有带这个 stage 的异常才值得「续期 + 重发一次」，
+         * 也只有它续不上时才允许上层落「登录已失效」标记。
+         */
+        internal const val CONTROL_AUTH_STAGE = "control_auth"
+
+        /** 登录态真的没救了（续期都失败）时给用户看的一句。 */
+        internal const val SESSION_EXPIRED_MESSAGE = "登录已失效，请重新登录"
+
+        /**
+         * 最近一次 3D 车模包下载失败的原因。
+         *
+         * 放在伴生对象里是因为 [LeapmotorApi] 每次调用都 new 一个，失败原因要跨实例留给
+         * 界面读。只用于「说人话的提示」，不参与任何判定。
+         */
+        @Volatile
+        internal var lastPackageError: String? = null
+
+        const val APP_USER_HOST = "https://appuser.leapmotor.cn"
+        const val GLOBAL_HOST = "https://app-gw-global-master.leapmotor.com"
+        const val DRIVING_RECORD_HOST = "https://appgateway.leapmotor.com"
+        const val MILEAGE_ENERGY_DETAIL_PATH =
+            "/carownerservice/v3/api/drivingrecord/mileage/energy/detail"
+        const val LAST_N_WEEKS_100KM_EC_RANK_PATH =
+            "/carownerservice/v3/api/drivingrecord/getLastNweeks100kmECAndRank"
+        const val DRIVING_RECORD_DEBUG_PREFIX = "/carownerservice/v3/api/drivingrecord"
+        const val LAST_WEEK_EC_PATH = "/carownerservice/v3/api/drivingrecord/getLastweekEC"
+        const val BLUETOOTH_CERTIFICATE_PATH =
+            "/carownerservice/v3/api/bluetoothkey/combine/syncBluetoothKeys"
+        const val BLUETOOTH_VEHICLE_METADATA_PATH = "/carownerservice/v3/api/vehicleinfo/commonConfig"
+        const val BLUETOOTH_CONFIGURATION_PATH = "/app/app-global-service/v3/api/commoninfo/transparent/conf/upload"
+        const val BLUETOOTH_CALIBRATION_PATH = "/app/app-global-service/v3/api/bluetoothkey/uploadAutonomyCalibrateParams"
+        const val BLUETOOTH_UPLOAD_RECORDS_PATH = "/carownerservice/v3/api/bluetoothkey/uploadRecords"
+        private const val BLUETOOTH_METADATA_STAGE = "ble_vehicle_metadata"
+        private const val BLUETOOTH_CONFIGURATION_STAGE = "ble_cloud_configuration"
+        private const val BLUETOOTH_CALIBRATION_STAGE = "ble_cloud_calibration"
+
+        // Bluetooth identity and key material must not enter the HTTP inspector or a redirect target.
+        internal val bluetoothCertificateHttpClient: OkHttpClient by lazy {
+            OkHttpClient.Builder()
+                .connectTimeout(15, TimeUnit.SECONDS)
+                .readTimeout(30, TimeUnit.SECONDS)
+                .writeTimeout(30, TimeUnit.SECONDS)
+                .callTimeout(45, TimeUnit.SECONDS)
+                .followRedirects(false)
+                .followSslRedirects(false)
+                .build()
+        }
+
+        /** 新网关 accessToken 剩余不足 5 分钟时提前续期。 */
+        private const val ACCESS_REFRESH_LEEWAY_MS = 5 * 60 * 1000L
+
+        /** 旧 token 剩余不足 60 秒时提前续期。 */
+        private const val OLD_REFRESH_LEEWAY_MS = 60 * 1000L
+
+        /** 从车况原始响应中提取 signalMap。 */
+        fun extractSignalMap(resp: JSONObject): JSONObject {
+            return findObjectStatic(resp) { it.opt("signalMap") is JSONObject }?.optJSONObject("signalMap")
+                ?: resp.optJSONObject("data")?.optJSONObject("signalMap")
+                ?: resp.optJSONObject("signalMap")
+                ?: findObjectStatic(resp) { isLegacyNamedVehicleSignalMap(it) }
+                ?: JSONObject()
+        }
+
+        internal fun isLastWeekEnergyEndpoint(pathSuffix: String): Boolean =
+            pathSuffix.trim().trim('/').substringAfterLast('/').lowercase(Locale.ROOT) == "getlastweekec"
+
+        internal fun isLastNWeeksEnergyEndpoint(pathSuffix: String): Boolean =
+            pathSuffix.trim().trim('/').substringAfterLast('/').lowercase(Locale.ROOT) ==
+                "getlastnweeks100kmecandrank"
+
+        /**
+         * Business VIN key used by a driving-record endpoint before old-token
+         * signing. The weekly rank API rejects `vin` and requires `carvin`.
+         */
+        internal fun drivingRecordVinParameterKey(pathSuffix: String): String =
+            if (isLastNWeeksEnergyEndpoint(pathSuffix)) "carvin" else "vin"
+
+        /** Verified gateway for driving-record energy endpoints. */
+        internal fun mileageEnergyHosts(): List<String> = listOf(DRIVING_RECORD_HOST)
+
+        internal fun isMileageEnergyDetailEndpoint(pathSuffix: String): Boolean =
+            pathSuffix.trim().trim('/').lowercase(Locale.ROOT) == "mileage/energy/detail"
+
+        internal fun mileageEnergyDetailBusinessParameters(
+            vin: String,
+            range: PurchaseToTodayTimestamps
+        ): Map<String, String> = linkedMapOf(
+            "begintime" to range.beginTime.toString(),
+            "endtime" to range.endTime.toString(),
+            "vin" to vin
+        )
+
+        /** Business parameters for the independent recent-seven-day query. */
+        internal fun recentMileageEnergyDetailBusinessParameters(
+            vin: String,
+            range: RecentMileageTimestamps
+        ): Map<String, String> = linkedMapOf(
+            "begintime" to range.beginTimeMs.toString(),
+            "endtime" to range.endTimeMs.toString(),
+            "vin" to vin
+        )
+
+        /** T03 returns the vehicle signal object directly, without a signalMap wrapper. */
+        private fun isLegacyNamedVehicleSignalMap(value: JSONObject): Boolean {
+            val markers = listOf(
+                "soc", "fuelSoc", "expectedMileage", "electricRangeStandard",
+                "fuelRangeStandard", "fuelRangeDynamic", "combinedRangeStandard",
+                "combinedRangeDynamic", "rangeMode", "acSwitch", "longitude", "latitude"
+            )
+            return markers.count { value.has(it) } >= 2
+        }
+
+        /**
+         * Preserve the first authentication response when the post-refresh retry cannot connect.
+         * The preserved response lets callers route terminal authentication failures consistently.
+         */
+        internal fun preserveAuthenticationFailureOnRetry(
+            initialResponse: VehicleListRawResponse,
+            retry: () -> VehicleListRawResponse
+        ): VehicleListRawResponse = try {
+            retry()
+        } catch (_: Exception) {
+            initialResponse.copy(authenticationFailed = true)
+        }
+
+        private fun findObjectStatic(root: Any?, predicate: (JSONObject) -> Boolean): JSONObject? {
+            if (root == null) return null
+            if (root is JSONObject) {
+                if (predicate(root)) return root
+                val keys = root.keys()
+                while (keys.hasNext()) {
+                    findObjectStatic(root.opt(keys.next()), predicate)?.let { return it }
+                }
+            } else if (root is JSONArray) {
+                for (i in 0 until root.length()) {
+                    findObjectStatic(root.opt(i), predicate)?.let { return it }
+                }
+            }
+        return null
+    }
+    }
+
+    // ------------------------------------------------------------------ HTTP
+
+    // Blocking Bluetooth preflight stays on one worker thread; other callers keep their own client.
+    private val bluetoothPreflightHttpClient = ThreadLocal<OkHttpClient>()
+
+    private fun http(
+        url: String,
+        method: String = "GET",
+        headers: Map<String, String> = emptyMap(),
+        query: Map<String, String?>? = null,
+        jsonBody: JSONObject? = null,
+        formBody: Map<String, String>? = null,
+        queryPost: Boolean = false
+    ): JSONObject {
+        val started = System.currentTimeMillis()
+        val response = httpRaw(url, method, headers, query, jsonBody, formBody, queryPost)
+        if (!response.isHttpSuccessful) {
+            throw ApiException("服务器暂时连不上（HTTP ${response.statusCode}），请稍后重试", response.statusCode, System.currentTimeMillis() - started, stage = url.substringAfterLast('/'))
+        }
+        if (response.rawBody.isBlank()) return JSONObject()
+        return try {
+            JSONObject(response.rawBody)
+        } catch (e: Exception) {
+            throw ApiException("服务器返回的内容不像正常数据，请稍后重试", response.statusCode, System.currentTimeMillis() - started, stage = url.substringAfterLast('/'))
+        }
+    }
+
+    private fun httpRaw(
+        url: String,
+        method: String = "GET",
+        headers: Map<String, String> = emptyMap(),
+        query: Map<String, String?>? = null,
+        jsonBody: JSONObject? = null,
+        formBody: Map<String, String>? = null,
+        queryPost: Boolean = false
+    ): VehicleListRawResponse {
+        val target = StringBuilder(url)
+        if (query != null) {
+            val qs = query
+                .filterValues { it != null }
+                .entries.joinToString("&") { (k, v) -> urlEncode(k) + "=" + urlEncode(v!!) }
+            if (qs.isNotEmpty()) {
+                target.append(if (url.contains("?")) "&" else "?").append(qs)
+            }
+        }
+        val bodyText: String? = when {
+            jsonBody != null -> jsonBody.toString()
+            formBody != null -> formBody.entries.joinToString("&") { (k, v) -> urlEncode(k) + "=" + urlEncode(v) }
+            queryPost -> ""
+            else -> null
+        }
+        val mediaType = when {
+            jsonBody != null -> "application/json; charset=utf-8".toMediaType()
+            formBody != null -> "application/x-www-form-urlencoded; charset=utf-8".toMediaType()
+            else -> null
+        }
+        val requestBody = bodyText?.toRequestBody(mediaType)
+        val request = Request.Builder().url(target.toString()).method(method, requestBody)
+            .apply { headers.forEach { (k, v) -> header(k, v) } }
+            .build()
+        val client = bluetoothPreflightHttpClient.get() ?: NetworkDebugController.httpClient()
+        return client.newCall(request).execute().use { response ->
+            VehicleListRawResponse(response.code, response.body?.string().orEmpty())
+        }
+    }
+
+    private fun urlEncode(s: String): String = URLEncoder.encode(s, "UTF-8")
+
+    // --------------------------------------------------------------- 签名助手
+
+    /** 与 SDK sortAndConcatValues 一致：null 跳过，空字符串保留，按键排序后拼接。 */
+    private fun sortAndConcatValues(vararg maps: Map<String, String?>): String {
+        val merged = LinkedHashMap<String, String>()
+        for (map in maps) {
+            for ((k, v) in map) if (v != null) merged[k] = v
+        }
+        return merged.keys.sorted().joinToString("") { merged[it]!! }
+    }
+
+    private fun oldAppHeaders(withToken: Boolean = true): Map<String, String> {
+        val headers = linkedMapOf(
+            "User-Agent" to "okhttp/4.9.3",
+            "APPPlatform" to "Android",
+            "APPVersion" to session.appVersion,
+            "APPImei" to session.deviceId,
+            "C-VERSIONS" to "APP",
+            "XFX-CDN-VRS" to "v4"
+        )
+        if (withToken && session.oldAuth != null) {
+            headers["XFX-CDN-CROSS-NODE"] = session.oldAuth!!.token
+        }
+        return headers
+    }
+
+    /** 旧链路签名参数（含 token 参与签名后剔除）。 */
+    private fun oldSignedParams(
+        params: Map<String, String> = emptyMap(),
+        withRefreshToken: Boolean = false,
+        includeTimespan: Boolean = true
+    ): Map<String, String> {
+        val old = session.oldAuth ?: throw ApiException("未登录（缺少旧 token）")
+        val map = LinkedHashMap<String, String?>()
+        if (includeTimespan) map["timespan"] = System.currentTimeMillis().toString()
+        map["nonce"] = Crypto.randomNonce()
+        map["deviceID"] = session.deviceId
+        if (withRefreshToken) map["refreshtoken"] = old.refreshToken else map["token"] = old.token
+        for ((k, v) in params) map[k] = v
+        val signStr = Crypto.md5Short(sortAndConcatValues(map))
+        map.remove(if (withRefreshToken) "refreshtoken" else "token")
+        val out = LinkedHashMap<String, String>()
+        for ((k, v) in map) if (v != null) out[k] = v
+        out["signStr"] = signStr
+        return out
+    }
+
+    private fun newGatewayHeaders(
+        params: Map<String, String?> = emptyMap(),
+        needLogin: Boolean = true,
+        signingKeyOverride: ByteArray? = null
+    ): Map<String, String> {
+        val old = session.oldAuth
+        val new = session.newAuth
+        val nonce = Crypto.randomNonce()
+        val timestamp = System.currentTimeMillis().toString()
+        val headers = linkedMapOf(
+            "source" to "leapmotor",
+            "channel" to "1",
+            "acceptLanguage" to "zh-CN",
+            "x-region" to "CN",
+            "x-api-signature-version" to "2.0",
+            "digest" to "",
+            "version" to session.appVersion,
+            "deviceType" to "android",
+            "nonce" to nonce,
+            "timestamp" to timestamp,
+            "deviceId" to session.deviceId,
+            "userId" to (new?.accountId ?: old?.accountId ?: ""),
+            "carvin" to session.selectedVin,
+            "cartype" to session.selectedCarType,
+            "x-subversion" to session.subVersion
+        )
+        val signHeaders = mapOf(
+            "acceptLanguage" to "zh-CN",
+            "channel" to "1",
+            "deviceId" to session.deviceId,
+            "deviceType" to "android",
+            "nonce" to nonce,
+            "source" to "leapmotor",
+            "timestamp" to timestamp,
+            "version" to session.appVersion
+        )
+        val signBase = sortAndConcatValues(signHeaders, params)
+        if (needLogin) {
+            val auth = session.newAuth ?: throw ApiException("未完成网关登录")
+            headers["token"] = auth.accessToken
+            headers["userId"] = auth.accountId
+            val signingKey = signingKeyOverride ?: auth.signKey()
+            headers["sign"] = Crypto.hmacSha256Hex(signingKey, signBase)
+        } else {
+            headers["sign"] = Crypto.sha256Hex(signBase)
+        }
+        return headers
+    }
+
+    private fun combinedAppAndGatewayHeaders(
+        params: Map<String, String?> = emptyMap(),
+        needLogin: Boolean = true
+    ): Map<String, String> {
+        val headers = oldAppHeaders(true).toMutableMap()
+        if (session.newAuth != null) {
+            headers.putAll(newGatewayHeaders(params, needLogin))
+        }
+        return headers
+    }
+
+    // ------------------------------------------------------------------ 登录
+
+    fun sendSms(phone: String) {
+        check(phone.isNotBlank()) { "手机号不能为空" }
+        val request = SmsLoginProtocol.buildSmsRequest(
+            Crypto.rsaEncryptPhone(phone),
+            oldAppHeaders(withToken = false)
+        )
+        val response = SmsLoginProtocol.parseHttpResponse(
+            executeLoginRequest(request, SmsLoginProtocol.SMS_STAGE), SmsLoginProtocol.SMS_STAGE
+        )
+        SmsLoginProtocol.checkSmsResponse(response)
+    }
+
+    /** 短信验证码登录：旧 token + 换新网关 accessToken/signKey。可附带极验验证凭据。 */
+    fun loginWithSms(
+        phone: String,
+        smsCode: String,
+        captchaResult: GeetestCaptchaResult? = null
+    ) {
+        check(phone.isNotBlank() && smsCode.isNotBlank()) { "手机号和验证码不能为空" }
+        val smId = SmsLoginProtocol.requireDeviceId(deviceFingerprintProvider)
+        val request = SmsLoginProtocol.buildLoginRequest(
+            phoneCiphertext = Crypto.rsaEncryptPhone(phone),
+            phone = phone,
+            smsCode = smsCode,
+            deviceId = session.deviceId,
+            smDeviceId = smId,
+            headers = oldAppHeaders(withToken = false),
+            captchaResult = captchaResult
+        )
+        val response = SmsLoginProtocol.parseHttpResponse(
+            executeLoginRequest(request, SmsLoginProtocol.LOGIN_STAGE), SmsLoginProtocol.LOGIN_STAGE
+        )
+        val oldAuth = SmsLoginProtocol.parseLoginResponse(response, phone, smsCode)
+        session.phone = phone.trim()
+        session.oldAuth = oldAuth
+        exchangeNewGateway()
+    }
+
+    private fun executeLoginRequest(request: Request, stage: String): VehicleListRawResponse =
+        SmsLoginProtocol.executeRequest(stage) { loginRequestExecutor(request) }
+
+    /** 通过抓包或导出的 JSON/Token 快速登录并换取新网关凭据。支持 JSON、纯 appLoginVO、逗号分隔、或含 token/accountId 的文本。 */
+    fun loginWithRawAuth(rawText: String, phoneInput: String = "") {
+        val trimmed = rawText.trim()
+        check(trimmed.isNotBlank()) { "导入内容不能为空" }
+
+        var accountId = ""
+        var token = ""
+        var refreshToken = ""
+        var tokenExpired = "21600"
+        var phone = phoneInput.trim()
+
+        if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+            val jsonObj = try {
+                JSONObject(trimmed)
+            } catch (e: Exception) {
+                throw ApiException("JSON 格式错误，请检查粘贴内容: ${e.message}")
+            }
+            val authObj = jsonObj.optJSONObject("appLoginVO")
+                ?: jsonObj.optJSONObject("appOneLoginVO")
+                ?: jsonObj.optJSONObject("data")?.optJSONObject("appLoginVO")
+                ?: jsonObj.optJSONObject("data")?.optJSONObject("appOneLoginVO")
+                ?: findObject(jsonObj) { it.has("accountId") && it.has("token") }
+            if (authObj != null) {
+                accountId = authObj.optString("accountId").ifEmpty { authObj.optString("identifier") }
+                token = authObj.optString("token").ifEmpty { authObj.optString("security") }
+                refreshToken = authObj.optString("refreshToken", "")
+                tokenExpired = authObj.optString("tokenExpired", "21600")
+            } else {
+                accountId = jsonObj.optString("accountId").ifEmpty { jsonObj.optString("identifier") }
+                token = jsonObj.optString("token").ifEmpty { jsonObj.optString("security") }
+                refreshToken = jsonObj.optString("refreshToken", "")
+                tokenExpired = jsonObj.optString("tokenExpired", "21600")
+            }
+            val devId = jsonObj.optString("deviceID").ifEmpty {
+                jsonObj.optString("deviceId").ifEmpty {
+                    jsonObj.optString("deviceid").ifEmpty {
+                        jsonObj.optString("appimei")
+                    }
+                }
+            }.trim()
+            if (devId.isNotBlank()) {
+                session.deviceId = devId
+            }
+            val smId = jsonObj.optString("smDeviceId").ifEmpty {
+                jsonObj.optString("smdeviceid").ifEmpty {
+                    jsonObj.optString("sm_device_id")
+                }
+            }.trim()
+            if (smId.isNotBlank()) {
+                session.smDeviceId = smId
+            }
+            if (phone.isBlank()) {
+                phone = jsonObj.optString("phone").ifEmpty {
+                    jsonObj.optJSONObject("data")?.optString("phone") ?: ""
+                }
+            }
+        } else if (trimmed.contains(",") && !trimmed.contains("\n")) {
+            val parts = trimmed.split(",")
+            accountId = parts[0].trim()
+            token = parts[1].trim()
+            if (parts.size > 2) refreshToken = parts[2].trim()
+        } else {
+            val tokenMatch = Regex("""(?:token|security|XFX-CDN-CROSS-NODE)["':=\s]+([a-zA-Z0-9_-]{16,})""", RegexOption.IGNORE_CASE).find(trimmed)
+            val accountMatch = Regex("""(?:accountId|identifier|userId|account_id)["':=\s]+([a-zA-Z0-9_-]+)""", RegexOption.IGNORE_CASE).find(trimmed)
+            val refreshMatch = Regex("""(?:refreshToken|XFX-CDN-CROSS-REFRESH-NODE)["':=\s]+([a-zA-Z0-9_-]{16,})""", RegexOption.IGNORE_CASE).find(trimmed)
+            val devIdMatch = Regex("""(?:deviceID|deviceId|deviceid|appimei)["':=\s]+([a-zA-Z0-9_-]{16,})""", RegexOption.IGNORE_CASE).find(trimmed)
+            val smMatch = Regex("""(?:smDeviceId|smdeviceid|sm_device_id)["':=\s]+([a-zA-Z0-9_%/+=.-]{16,})""", RegexOption.IGNORE_CASE).find(trimmed)
+            token = tokenMatch?.groupValues?.getOrNull(1) ?: ""
+            accountId = accountMatch?.groupValues?.getOrNull(1) ?: ""
+            refreshToken = refreshMatch?.groupValues?.getOrNull(1) ?: ""
+            val devId = devIdMatch?.groupValues?.getOrNull(1)?.trim() ?: ""
+            if (devId.isNotBlank()) {
+                session.deviceId = devId
+            }
+            val smId = smMatch?.groupValues?.getOrNull(1)?.trim() ?: ""
+            if (smId.isNotBlank()) {
+                session.smDeviceId = smId
+            }
+        }
+
+        check(accountId.isNotBlank() && token.isNotBlank()) {
+            "未能解析出有效的 accountId 和 token，请确保内容包含这两项凭据"
+        }
+
+        if (phone.isNotBlank()) {
+            session.phone = phone
+        }
+        session.oldAuth = OldAuth(
+            accountId = accountId,
+            token = token,
+            refreshToken = refreshToken,
+            tokenExpired = tokenExpired,
+            tokenObtainedAt = System.currentTimeMillis()
+        )
+        exchangeNewGateway()
+    }
+
+    private fun exchangeNewGateway() {
+        val old = session.oldAuth ?: throw ApiException("未登录")
+        val body = JSONObject().apply {
+            put("identifier", old.accountId)
+            put("identifierType", "1")
+            put("security", old.token)
+        }
+        val signParams = mapOf(
+            "identifier" to old.accountId,
+            "identifierType" to "1",
+            "security" to old.token
+        )
+        val resp = http(
+            "$GLOBAL_HOST/base/base-user/account/v1/login",
+            method = "POST",
+            headers = newGatewayHeaders(signParams, needLogin = false),
+            jsonBody = body
+        )
+        session.newAuth = extractNewAuth(resp)
+    }
+
+    private fun refreshGatewayToken() {
+        val auth = session.newAuth ?: throw ApiException("未登录")
+        if (auth.refreshToken.isBlank()) throw ApiException("缺少 refreshToken，无法自动续期")
+        val body = JSONObject().apply { put("refreshToken", auth.refreshToken) }
+        val resp = http(
+            "$GLOBAL_HOST/base/base-user/token/v1/refresh",
+            method = "POST",
+            headers = newGatewayHeaders(mapOf("refreshToken" to auth.refreshToken), needLogin = true),
+            jsonBody = body
+        )
+        session.newAuth = extractNewAuth(resp)
+    }
+
+    /** 旧 App token 续期（远控签名用），需手机号。 */
+    fun refreshOldToken() {
+        val old = session.oldAuth ?: throw ApiException("未登录")
+        if (session.phone.isBlank()) throw ApiException("旧 token 续期需要手机号，请重新登录")
+        val signed = oldSignedParams(
+            mapOf(
+                "accountId" to old.accountId,
+                "accountNumber" to Crypto.rsaEncryptPhone(session.phone)
+            ),
+            withRefreshToken = true
+        )
+        val headers = oldAppHeaders(true) +
+            ("XFX-CDN-CROSS-REFRESH-NODE" to old.refreshToken)
+        val resp = http(
+            "$APP_USER_HOST/app-user/appuseroperate/getnewtoken",
+            headers = headers,
+            query = signed
+        )
+        val data = resp.optJSONObject("data") ?: resp
+        val token = data.optString("token", "")
+        val code = resp.optString("code", "").ifEmpty { resp.optString("result", "") }
+        val success = code == "200" || code == "0" || resp.optBoolean("success", false)
+        if (token.isEmpty() || !success) {
+            // 「旧 token 续期失败: xxx」是写代码的人才看得懂的说法，用户能做只有重新登录
+            throw ApiException("登录已过期，请重新登录", stage = "token_refresh")
+        }
+        val tokenExpired = if (data.has("tokenExpired") && !data.isNull("tokenExpired")) {
+            data.optString("tokenExpired")
+        } else {
+            "21600"
+        }
+        val obtainedAt = System.currentTimeMillis()
+        session.oldAuth = old.copy(
+            token = token,
+            refreshToken = data.optString("refreshToken", old.refreshToken),
+            tokenExpired = tokenExpired,
+            tokenObtainedAt = obtainedAt
+        )
+        try {
+            exchangeNewGateway()
+        } catch (_: Exception) {
+            // best-effort
+        }
+    }
+
+    private fun extractNewAuth(resp: JSONObject): NewAuth {
+        val data = resp.optJSONObject("data") ?: findObject(resp) {
+            it.has("accessToken") && it.optJSONObject("signParam") != null
+        } ?: throw ApiException(
+            // 原来这里把整段网关响应拼进 message，首页就弹出了
+            // 「网关登录响应缺少 accessToken/signParam: {"code":302010202,...}」——
+            // 用户看到只会以为 App 坏了。技术细节进 stage，上屏只说结果和下一步。
+            "登录没能完成，请再试一次",
+            stage = "gateway_login",
+        )
+        val accessToken = data.optString("accessToken")
+        val signParam = data.optJSONObject("signParam")
+        val r2 = signParam?.optString("r2") ?: ""
+        val r3 = signParam?.optString("r3") ?: ""
+        if (accessToken.isEmpty() || r2.isEmpty() || r3.isEmpty()) {
+            throw ApiException("登录没能完成，请再试一次", stage = "gateway_login")
+        }
+        val signKey = Crypto.deriveSignKey(accessToken, r2, r3)
+        val boundDeviceId = Crypto.jwtDeviceId(accessToken)
+        if (!boundDeviceId.isNullOrBlank()) {
+            session.deviceId = boundDeviceId
+        }
+        val expiresAt = Crypto.jwtExpiryMs(accessToken).takeIf { it > 0 }
+            ?: data.optLong("tokenExpireTime").takeIf { it > 0 }?.let {
+                System.currentTimeMillis() + it * 1000
+            } ?: 0L
+        return NewAuth(
+            // The gateway response may carry a different account identifier. The gateway HMAC
+            // contract keeps using the account ID returned by the SMS-login (old) session.
+            accountId = session.oldAuth?.accountId ?: data.optString("accountId"),
+            accessToken = accessToken,
+            refreshToken = data.optString("refreshToken", ""),
+            signKeyBase64 = android.util.Base64.encodeToString(signKey, android.util.Base64.DEFAULT),
+            accessTokenExpiresAt = expiresAt
+        )
+    }
+
+    // ---------------------------------------------------------------- 车辆
+
+    fun listVehicles(): List<Vehicle> {
+        val resp = gatewayFetch("$GLOBAL_HOST/app/app-global-service/v1/vehicle/list", "GET")
+        val rawObjects = collectObjects(resp) { it.has("vin") && it.optString("vin").length >= 8 }
+        val vehicles = rawObjects
+            .distinctBy { it.optString("vin") }
+            .map {
+                val carType = it.optString("carType")
+                    .ifEmpty { it.optString("cartype") }
+                    .ifEmpty { it.optJSONObject("modelParam")?.optString("carType").orEmpty() }
+                    .ifEmpty { it.optString("model") }
+                val rightList = it.optString("rightList")
+                val isReev = carType.contains("REEV", ignoreCase = true) ||
+                    carType.contains("增程") ||
+                    rightList.split(",").map { c -> c.trim() }.contains("380")
+                val inferredPowerType = if (isReev) {
+                    SessionStore.VehiclePowerType.RANGE_EXTENDER
+                } else {
+                    SessionStore.VehiclePowerType.PURE_ELECTRIC
+                }
+                val nickname = it.optString("vehicleName")
+                    .ifEmpty { it.optString("carName") }
+                    .ifEmpty { it.optString("licensePlate") }
+                    .ifEmpty { it.optString("nickName") }
+                    .ifEmpty { it.optString("nickname") }
+                val year = it.optString("year")
+                    .ifEmpty { it.optJSONObject("modelParam")?.optString("year").orEmpty() }
+                    .ifEmpty { it.optString("modelYear") }
+                    .ifEmpty { it.optString("modelyear") }
+                    .ifEmpty { it.optString("carYear") }
+                val isShared = it.optBoolean("isShare", false) ||
+                    it.optBoolean("isShared", false) ||
+                    it.optBoolean("share", false) ||
+                    it.optString("bindType") == "2" ||
+                    it.optInt("bindType", 0) == 2 ||
+                    it.optString("userType") == "2" ||
+                    it.optInt("userType", 0) == 2 ||
+                    it.optString("shareType") == "1" ||
+                    it.optInt("shareType", 0) == 1 ||
+                    it.optInt("isMaster", 1) == 0 ||
+                    (it.has("isOwner") && !it.optBoolean("isOwner", true)) ||
+                    (it.has("owner") && !it.optBoolean("owner", true))
+                Vehicle(
+                    vin = it.optString("vin"),
+                    carType = carType,
+                    hvacCapability = HvacCapabilityParser.parse(it.optJSONObject("funcConfig")),
+                    nickname = nickname,
+                    year = year,
+                    color = it.optString("outColor").ifEmpty { it.optString("color") },
+                    powerType = inferredPowerType,
+                    isSharedAccount = isShared
+                )
+            }
+        if (vehicles.isNotEmpty()) {
+            if (session.selectedVin.isBlank()) {
+                session.selectedVin = vehicles.first().vin
+                session.selectedCarType = vehicles.first().carType
+                session.route = null
+            }
+            vehicles.firstOrNull { it.vin == session.selectedVin }?.let { selected ->
+                session.selectedCarType = selected.carType.ifBlank { session.selectedCarType }
+                session.hvacCapability = selected.hvacCapability
+                session.selectedNickname = selected.nickname
+                session.selectedYear = selected.year
+            }
+        }
+        return vehicles
+    }
+
+    /**
+     * 获取车辆图片元数据（包含官方 CDN 图片 URL 与切图包 Key）。
+     * 若接口不支持或调用失败，返回 null，由展示层降级至本地静态图。
+     */
+    fun getVehiclePictureMeta(
+        vin: String = session.selectedVin,
+        diagnostics: MutableList<String>? = null
+    ): VehiclePictureMeta? {
+        if (vin.isBlank()) return null
+        val formParams = mapOf(
+            "deviceID" to session.deviceId,
+            "vin" to vin
+        )
+
+        val candidatePaths = listOf(
+            "/carownerservice/v3/api/carpicture/3d/key",
+            "/carownerservice/v3/api/carpicture/key",
+            "/carownerservice/v3/api/3d/key",
+            "/carownerservice/vehicle/v1/carpicture/key",
+            "/carownerservice/v1/vehicle/carpicture/key"
+        )
+
+        // 1. 优先尝试 appgateway.leapmotor.com（旧网关/能耗同一服务集群）
+        for (path in candidatePaths) {
+            val url = "$DRIVING_RECORD_HOST$path"
+
+            // 1a. 旧链路签名 GET（很多查询元数据接口为 GET）
+            try {
+                val signed = oldSignedParams(
+                    params = mapOf("vin" to vin, "carvin" to vin, "deviceID" to session.deviceId, "osVersion" to "136.0.7103.125"),
+                    includeTimespan = true
+                )
+                val headers = combinedAppAndGatewayHeaders(signed, needLogin = true)
+                val resp = http(
+                    url = url,
+                    method = "GET",
+                    headers = headers,
+                    query = signed
+                )
+                val extracted = parsePictureMetaFromResponse(resp, url)
+                if (extracted != null) {
+                    diagnostics?.add("成功: $url [OldSign GET]")
+                    return extracted
+                }
+                val msg = resp.optString("msg").ifEmpty { resp.optString("message") }
+                diagnostics?.add("$url [OldSign GET] 无图: $msg (code=${resp.opt("code")})")
+            } catch (e: Exception) {
+                diagnostics?.add("$url [OldSign GET] 异常: ${e.message?.take(80)}")
+            }
+
+            // 1b. 旧链路签名 POST（URL 携带签名 query，Body 携带表单）
+            try {
+                val signed = oldSignedParams(
+                    params = mapOf("vin" to vin, "carvin" to vin, "deviceID" to session.deviceId),
+                    includeTimespan = true
+                )
+                val headers = combinedAppAndGatewayHeaders(signed, needLogin = true)
+                val resp = http(
+                    url = url,
+                    method = "POST",
+                    headers = headers,
+                    query = signed,
+                    formBody = formParams
+                )
+                val extracted = parsePictureMetaFromResponse(resp, url)
+                if (extracted != null) {
+                    diagnostics?.add("成功: $url [OldSign POST]")
+                    return extracted
+                }
+                val msg = resp.optString("msg").ifEmpty { resp.optString("message") }
+                diagnostics?.add("$url [OldSign POST] 无图: $msg (code=${resp.opt("code")})")
+            } catch (e: Exception) {
+                diagnostics?.add("$url [OldSign POST] 异常: ${e.message?.take(80)}")
+            }
+
+            // 1c. 新网关签名 POST (Form)
+            try {
+                val resp = gatewayFetch(
+                    url = url,
+                    method = "POST",
+                    params = formParams,
+                    formBody = formParams
+                )
+                val extracted = parsePictureMetaFromResponse(resp, url)
+                if (extracted != null) {
+                    diagnostics?.add("成功: $url [NewGw Form]")
+                    return extracted
+                }
+                val msg = resp.optString("msg").ifEmpty { resp.optString("message") }
+                diagnostics?.add("$url [NewGw Form] 无图: $msg")
+            } catch (e: Exception) {
+                diagnostics?.add("$url [NewGw Form] 异常: ${e.message?.take(80)}")
+            }
+
+            // 1d. 新网关签名 POST (JSON)
+            try {
+                val jsonBody = JSONObject().apply {
+                    put("deviceID", session.deviceId)
+                    put("vin", vin)
+                    put("carvin", vin)
+                }
+                val resp = gatewayFetch(
+                    url = url,
+                    method = "POST",
+                    params = mapOf("vin" to vin),
+                    jsonBody = jsonBody
+                )
+                val extracted = parsePictureMetaFromResponse(resp, url)
+                if (extracted != null) {
+                    diagnostics?.add("成功: $url [NewGw JSON]")
+                    return extracted
+                }
+            } catch (e: Exception) {
+                diagnostics?.add("$url [NewGw JSON] 异常: ${e.message?.take(80)}")
+            }
+        }
+
+        // 2. 尝试车辆专属区域网关 route.appRegion（如已解析）
+        val routeHost = session.route?.appRegion?.takeIf { it.isNotBlank() }
+        if (routeHost != null) {
+            for (path in candidatePaths) {
+                val url = "$routeHost$path"
+                try {
+                    val resp = gatewayFetch(
+                        url = url,
+                        method = "POST",
+                        params = formParams,
+                        formBody = formParams
+                    )
+                    val extracted = parsePictureMetaFromResponse(resp, url)
+                    if (extracted != null) {
+                        diagnostics?.add("成功: $url [RouteGw Form]")
+                        return extracted
+                    }
+                } catch (e: Exception) {
+                    diagnostics?.add("$url [RouteGw] 异常: ${e.message?.take(80)}")
+                }
+            }
+        }
+
+        // 3. 备用尝试 GLOBAL_HOST
+        for (path in candidatePaths.take(2)) {
+            val url = "$GLOBAL_HOST$path"
+            try {
+                val resp = gatewayFetch(
+                    url = url,
+                    method = "POST",
+                    params = formParams,
+                    formBody = formParams
+                )
+                val extracted = parsePictureMetaFromResponse(resp, url)
+                if (extracted != null) {
+                    diagnostics?.add("成功: $url [GlobalGw]")
+                    return extracted
+                }
+            } catch (e: Exception) {
+                diagnostics?.add("$url [GlobalGw] 异常: ${e.message?.take(80)}")
+            }
+        }
+
+        return null
+    }
+
+    /** 解析放在 Models.kt 的纯函数里（可单测），这里只负责剥掉响应外壳。 */
+    private fun parsePictureMetaFromResponse(resp: JSONObject, sourceUrl: String = ""): VehiclePictureMeta? =
+        parseVehiclePictureMeta(resp.optJSONObject("data") ?: resp, sourceUrl)
+
+    /**
+     * 下载官方 3D 车模包（H5 运行时或车型资产），并解压合并到 [destDir]。
+     *
+     * 2026-11-12 重写。原实现只认「一种域名 + 一种签名 + 裸 ZIP + 根目录有 index.html」，
+     * 任何一环不成立都只是安静地返回 `false`，界面上只剩一句「多半是网络问题」——
+     * 线上反馈就是「3D 车模总是下载不下来」。现在的做法：
+     *
+     *  1. **域名与元数据探测对齐**（多了 [GLOBAL_HOST]，`API.md` 里那条
+     *     `/carpicture/key` 的兼容线路就走它）—— 元数据拿得到 `h5Key`、包却下不下来，
+     *     最常见的差异就在这里；
+     *  2. **三种请求形态都试**：旧签名 GET / 旧签名 POST（body 带 key）/ 新网关 POST；
+     *  3. **包体归一化**（见 [CarModelPackage]）：裸 ZIP、gzip、JSON 里的下载地址、
+     *     JSON 里的 base64，都能接住；
+     *  4. **完整性校验**：服务端下发的 `h5Whole` / `srcWhole` 是 MD5，对不上按「被截断」
+     *     处理并换下一种形态重试，而不是把半截包解进目录；
+     *  5. 失败原因写进 [lastPackageError]，界面上可以直接说人话。
+     *
+     * [expectedMd5] 传服务端下发的 base64 MD5；为空时跳过校验（老数据 / 字段缺失）。
+     */
+    fun downloadCarModelPackage(key: String, destDir: File, expectedMd5: String? = null): Boolean {
+        if (key.isBlank()) return false
+        val path = "/carownerservice/v3/api/carpicture/key/package"
+        val hosts = CarModelPackage.candidateHosts(
+            session.route?.appCenter,
+            session.route?.appRegion,
+            DRIVING_RECORD_HOST,
+            GLOBAL_HOST,
+            APP_USER_HOST,
+        )
+        destDir.mkdirs()
+        lastPackageError = null
+
+        var reason: String? = null
+        var tokenFailure = false
+
+        fun note(text: String) {
+            reason = text
+            android.util.Log.w("CarModelDownload", "downloadCarModelPackage: $text")
+        }
+
+        /** 裸 GET：跟 JSON 里给出的 OSS 预签名地址时用，**不能**带我们自己的签名头。 */
+        fun plainFetch(url: String): ByteArray? = runCatching {
+            // 预签名地址常是 http（老数据），部分系统已禁明文，统一抬成 https
+            val secure = if (url.startsWith("http://", ignoreCase = true)) "https://" + url.substring(7) else url
+            val request = Request.Builder().url(secure).get().build()
+            NetworkDebugController.httpClient().newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    note("跟链 HTTP ${response.code}")
+                    null
+                } else {
+                    response.body?.bytes()
+                }
+            }
+        }.getOrElse { e ->
+            note("跟链异常：${e.message?.take(80)}")
+            null
+        }
+
+        /** 发一次请求，返回原始字节（什么形态都往下走，由 [accept] 判）。 */
+        fun execute(
+            url: String,
+            method: String,
+            headers: Map<String, String>,
+            query: Map<String, String?>?,
+            form: Map<String, String>? = null,
+        ): ByteArray? {
+            val target = StringBuilder(url)
+            if (!query.isNullOrEmpty()) {
+                val qs = query.entries.filter { it.value != null }
+                    .joinToString("&") { (k, v) -> urlEncode(k) + "=" + urlEncode(v!!) }
+                if (qs.isNotEmpty()) target.append(if (url.contains("?")) "&" else "?").append(qs)
+            }
+            val body = form?.entries?.joinToString("&") { (k, v) -> urlEncode(k) + "=" + urlEncode(v) }
+                ?.toRequestBody("application/x-www-form-urlencoded; charset=utf-8".toMediaType())
+            val request = Request.Builder()
+                .url(target.toString())
+                .method(method, body)
+                .apply { headers.forEach { (k, v) -> header(k, v) } }
+                .build()
+            return runCatching {
+                NetworkDebugController.httpClient().newCall(request).execute().use { response ->
+                    android.util.Log.i(
+                        "CarModelDownload",
+                        "$method $url → ${response.code}, ${response.header("Content-Length") ?: "?"}B",
+                    )
+                    if (!response.isSuccessful) {
+                        note("HTTP ${response.code}（$method ${url.substringAfter("//").take(40)}）")
+                        null
+                    } else {
+                        response.body?.bytes()
+                    }
+                }
+            }.getOrElse { e ->
+                note("网络异常（$method）：${e.message?.take(60)}")
+                null
+            }
+        }
+
+        /** 归一化 → 校验 → 解压。true 表示这个包已经落盘可用。 */
+        fun accept(raw: ByteArray, variant: String): Boolean {
+            var bytes = raw
+            var shape = CarModelPackage.shapeOf(bytes)
+            if (shape == CarModelPackage.Shape.GZIP) {
+                bytes = CarModelPackage.gunzip(bytes) ?: run {
+                    note("[$variant] gzip 解不开")
+                    return false
+                }
+                shape = CarModelPackage.shapeOf(bytes)
+            }
+            if (shape == CarModelPackage.Shape.JSON || shape == CarModelPackage.Shape.UNKNOWN) {
+                val text = String(bytes, Charsets.UTF_8)
+                when (val hint = CarModelPackage.readHint(text)) {
+                    is CarModelPackage.Hint.Link -> {
+                        note("[$variant] 响应是下载地址，跟链取包")
+                        val linked = plainFetch(hint.url) ?: return false
+                        bytes = if (CarModelPackage.shapeOf(linked) == CarModelPackage.Shape.GZIP) {
+                            CarModelPackage.gunzip(linked) ?: linked
+                        } else {
+                            linked
+                        }
+                        shape = CarModelPackage.shapeOf(bytes)
+                    }
+                    is CarModelPackage.Hint.Inline -> {
+                        bytes = hint.bytes
+                        shape = CarModelPackage.shapeOf(bytes)
+                    }
+                    is CarModelPackage.Hint.Failure -> {
+                        if (CarModelPackage.looksLikeTokenFailure(text)) tokenFailure = true
+                        note("[$variant] 服务端拒绝：${hint.reason}")
+                        return false
+                    }
+                    CarModelPackage.Hint.Unknown -> {
+                        note(
+                            "[$variant] 不是压缩包（${bytes.size}B）：" +
+                                text.take(70).replace('\n', ' ')
+                        )
+                        return false
+                    }
+                }
+            }
+            if (shape != CarModelPackage.Shape.ZIP) {
+                note("[$variant] 包体不是 zip（${bytes.size}B）")
+                return false
+            }
+            if (bytes.size > CarModelPackage.MAX_BYTES) {
+                note("[$variant] 包体异常大（${bytes.size}B）")
+                return false
+            }
+            if (!CarModelPackage.matchesExpected(bytes, expectedMd5)) {
+                note("[$variant] 包体校验不过（可能被截断）")
+                return false
+            }
+            val unzipped = CarModelPackage.unzip(bytes, destDir)
+            if (!unzipped.ok) {
+                note("[$variant] 解压失败：${unzipped.error}")
+                return false
+            }
+            android.util.Log.i(
+                "CarModelDownload",
+                "[$variant] 解压完成 ${unzipped.files} 个文件 → ${destDir.name}",
+            )
+            return true
+        }
+
+        fun variantsFor(host: String): List<Pair<String, () -> ByteArray?>> {
+            val url = "$host$path"
+            val legacy = runCatching {
+                oldSignedParams(params = mapOf("key" to key), includeTimespan = true)
+            }.getOrNull()
+            val legacyHeaders = legacy?.let { combinedAppAndGatewayHeaders(params = it, needLogin = true) }
+            val gwParams = buildMap {
+                put("key", key)
+                session.selectedVin.takeIf { it.isNotBlank() }?.let { put("vin", it) }
+            }
+            return listOfNotNull(
+                if (legacy != null && legacyHeaders != null) {
+                    "旧签名 GET" to { execute(url, "GET", legacyHeaders, legacy) }
+                } else {
+                    null
+                },
+                if (legacy != null && legacyHeaders != null) {
+                    "旧签名 POST" to {
+                        execute(url, "POST", legacyHeaders, legacy, mapOf("key" to key))
+                    }
+                } else {
+                    null
+                },
+                if (session.newAuth != null) {
+                    "新网关 POST" to {
+                        runCatching {
+                            execute(url, "POST", newGatewayHeaders(gwParams, true), null, gwParams)
+                        }.getOrNull()
+                    }
+                } else {
+                    null
+                },
+            )
+        }
+
+        fun tryHost(host: String): Boolean {
+            for ((variant, call) in variantsFor(host)) {
+                val raw = call() ?: continue
+                if (accept(raw, variant)) return true
+            }
+            return false
+        }
+
+        var refreshed = false
+        for (host in hosts) {
+            if (tryHost(host)) return true
+            if (tokenFailure && !refreshed) {
+                refreshed = true
+                android.util.Log.i("CarModelDownload", "3D 车模下载遇到鉴权失败，续期后重试一次…")
+                runCatching { refreshAccessTokenWithFallback() }
+                runCatching { refreshOldToken() }
+                if (tryHost(host)) return true
+            }
+        }
+        lastPackageError = reason ?: "下载失败"
+        return false
+    }
+
+    /**
+     * 查询当前车辆可用主题列表（包含 3D 背景图与小组件皮肤）。
+     * 端点: POST /carownerservice/v3/api/theme/listThemeList
+     */
+    fun listThemeList(vin: String = session.selectedVin): List<VehicleTheme> {
+        if (vin.isBlank()) return emptyList()
+        val url = "$DRIVING_RECORD_HOST/carownerservice/v3/api/theme/listThemeList"
+        val jsonBody = JSONObject().apply { put("vin", vin) }
+        val resp = gatewayFetch(
+            url = url,
+            method = "POST",
+            params = mapOf("vin" to vin),
+            jsonBody = jsonBody
+        )
+        val data = resp.optJSONObject("data") ?: return emptyList()
+        val listArray = data.optJSONArray("list") ?: return emptyList()
+        val themes = ArrayList<VehicleTheme>(listArray.length())
+        for (i in 0 until listArray.length()) {
+            val item = listArray.optJSONObject(i) ?: continue
+            themes.add(VehicleTheme.fromJson(item))
+        }
+        return themes
+    }
+
+    /**
+     * 查询当前车辆官方生效的最新主题。
+     * 端点: POST /carownerservice/v3/api/theme/latest
+     */
+    fun getLatestTheme(vin: String = session.selectedVin): VehicleTheme? {
+        if (vin.isBlank()) return null
+        val url = "$DRIVING_RECORD_HOST/carownerservice/v3/api/theme/latest"
+        val jsonBody = JSONObject().apply { put("vin", vin) }
+        val resp = gatewayFetch(
+            url = url,
+            method = "POST",
+            params = mapOf("vin" to vin),
+            jsonBody = jsonBody
+        )
+        val data = resp.optJSONObject("data") ?: return null
+        return VehicleTheme.fromJson(data)
+    }
+
+    /**
+     * 下载主题资源包并安全解压至目标目录 [destDir]。
+     */
+    fun downloadThemePackage(pkgUrl: String, destDir: File, expectedMd5: String? = null): Boolean {
+        if (pkgUrl.isBlank()) return false
+        destDir.mkdirs()
+        val canonicalDest = destDir.canonicalFile
+        val request = Request.Builder()
+            .url(pkgUrl)
+            .get()
+            .build()
+        val client = NetworkDebugController.httpClient()
+        return runCatching {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use false
+                val bytes = response.body?.bytes() ?: return@use false
+                if (bytes.size < 4 || bytes[0] != 0x50.toByte() || bytes[1] != 0x4B.toByte()) {
+                    return@use false
+                }
+                if (!expectedMd5.isNullOrBlank()) {
+                    val md5Digest = java.security.MessageDigest.getInstance("MD5")
+                    val actualMd5 = md5Digest.digest(bytes).joinToString("") { "%02x".format(it) }
+                    if (!actualMd5.equals(expectedMd5.trim(), ignoreCase = true)) {
+                        android.util.Log.w("ThemeDownload", "MD5 校验不匹配: 期望=$expectedMd5, 实际=$actualMd5")
+                        return@use false
+                    }
+                }
+                ZipInputStream(java.io.ByteArrayInputStream(bytes)).use { zis ->
+                    while (true) {
+                        val entry = zis.nextEntry ?: break
+                        val targetFile = File(canonicalDest, entry.name).canonicalFile
+                        if (!targetFile.path.startsWith(canonicalDest.path + File.separator)) {
+                            throw IOException("Zip traversal entry rejected: ${entry.name}")
+                        }
+                        if (entry.isDirectory) {
+                            targetFile.mkdirs()
+                        } else {
+                            targetFile.parentFile?.mkdirs()
+                            FileOutputStream(targetFile).use { fos ->
+                                zis.copyTo(fos)
+                            }
+                        }
+                        zis.closeEntry()
+                    }
+                }
+                true
+            }
+        }.getOrDefault(false)
+    }
+
+    /**
+     * Read-only mileage/energy detail from the legacy app-user service.
+     *
+     * This endpoint is intentionally separate from vehicle-state polling and
+     * remote-control calls. The response is returned to the in-memory parser
+     * only; callers must not persist or upload it.
+     */
+    fun getMileageEnergy(): JSONObject {
+        return getMileageEnergy(purchaseAtMs = null)
+    }
+
+    /**
+     * Read the detail endpoint with the current purchase-day-to-now window.
+     * [purchaseAtMs] is optional because older sessions do not have a stored
+     * purchase timestamp; callers can infer it from a cached delivery-days
+     * response before calling this method.
+     */
+    fun getMileageEnergy(
+        purchaseAtMs: Long?,
+        nowMs: Long = System.currentTimeMillis()
+    ): JSONObject {
+        requireVin()
+        try {
+            ensureFreshOldToken()
+        } catch (_: Exception) {
+            // The signed request below remains the source of truth; a still
+            // valid legacy token can continue without an unnecessary refresh.
+        }
+
+        fun candidates(): List<String> = mileageEnergyHosts()
+
+        fun attempt(): JSONObject {
+            var last: ApiException? = null
+            // 1. 优先对齐官方 App v1.22 抓包格式（api.log 第 2216 行）：带 vin 与 timespan，挂载新网关鉴权
+            val singleVinSigned = oldSignedParams(
+                params = mapOf("vin" to session.selectedVin),
+                includeTimespan = true
+            )
+            val singleVinHeaders = combinedAppAndGatewayHeaders(singleVinSigned, needLogin = true)
+            for (host in candidates()) {
+                try {
+                    val resp = http(
+                        "$host$MILEAGE_ENERGY_DETAIL_PATH",
+                        headers = singleVinHeaders,
+                        query = singleVinSigned
+                    )
+                    val data = resp.optJSONObject("data")
+                    if (data != null && data.length() > 0) return resp
+                } catch (e: ApiException) {
+                    last = e
+                }
+            }
+
+            // 2. 兼容回退：带 begintime/endtime 时间范围参数
+            val range = DrivingRecordTimeRange.purchaseToToday(purchaseAtMs, nowMs)
+            val rangeSigned = oldSignedParams(
+                params = mileageEnergyDetailBusinessParameters(session.selectedVin, range),
+                includeTimespan = true
+            )
+            val rangeHeaders = combinedAppAndGatewayHeaders(rangeSigned, needLogin = true)
+            for (host in candidates()) {
+                try {
+                    return http(
+                        "$host$MILEAGE_ENERGY_DETAIL_PATH",
+                        headers = rangeHeaders,
+                        query = rangeSigned
+                    )
+                } catch (e: ApiException) {
+                    last = e
+                }
+            }
+            throw (last ?: ApiException("能耗接口请求失败"))
+        }
+
+        var response: JSONObject
+        try {
+            response = attempt()
+        } catch (error: ApiException) {
+            // The old service can signal an expired token either as a business
+            // result (39) or as an HTTP 401/403. Both paths get one refresh and
+            // one retry; no energy request is added to the vehicle polling loop.
+            if (error.httpStatus != 401 && error.httpStatus != 403) throw error
+            refreshOldToken()
+            try {
+                response = attempt()
+            } catch (retryError: ApiException) {
+                if (retryError.httpStatus == 401 || retryError.httpStatus == 403) {
+                    throw ApiException(
+                        "旧 token 续期失败：refresh token失效",
+                        retryError.httpStatus,
+                        retryError.durationMs,
+                        retryError.retryCount,
+                        retryError.stage
+                    )
+                }
+                throw retryError
+            }
+        }
+        if (isOldAuthFailure(response)) {
+            refreshOldToken()
+            response = attempt()
+            if (isOldAuthFailure(response)) {
+                // The only legacy-auth retry has already completed. Preserve
+                // the established terminal-expiry wording so MainActivity
+                // enters its explicit re-login flow instead of treating this
+                // as an ordinary business failure.
+                throw ApiException("旧 token 续期失败：refresh token失效")
+            }
+        }
+        checkResult(response, "能耗查询")
+        return response
+    }
+
+    /**
+     * Read only the recent seven-day mileage detail window.
+     *
+     * This is intentionally separate from [getMileageEnergy], whose existing
+     * purchase-day-to-now contract feeds the lifetime energy cards.  The
+     * recovered client sends millisecond `begintime/endtime` values for this
+     * window and includes the normal `timespan`/nonce/deviceID/signStr query
+     * fields generated by [oldSignedParams].
+     */
+    fun getRecentMileageEnergy(nowMs: Long = System.currentTimeMillis()): JSONObject {
+        requireVin()
+        runCatching { ensureFreshOldToken() }
+
+        fun attempt(): JSONObject {
+            // 对齐官方 App 抓包标准契约：带 recent 7-day 时间范围参数
+            val range = DrivingRecordTimeRange.recentMileageRange(nowMs)
+            val signed = oldSignedParams(
+                params = recentMileageEnergyDetailBusinessParameters(session.selectedVin, range),
+                includeTimespan = true
+            )
+            val headers = combinedAppAndGatewayHeaders(signed, needLogin = true)
+            return http(
+                "${DRIVING_RECORD_HOST}${MILEAGE_ENERGY_DETAIL_PATH}",
+                headers = headers,
+                query = signed
+            )
+        }
+
+        var response: JSONObject
+        var authenticationRefreshAttempted = false
+        try {
+            response = attempt()
+        } catch (error: ApiException) {
+            if (error.httpStatus != 401 && error.httpStatus != 403) throw error
+            refreshOldToken()
+            authenticationRefreshAttempted = true
+            try {
+                response = attempt()
+            } catch (retryError: ApiException) {
+                if (retryError.httpStatus == 401 || retryError.httpStatus == 403) {
+                    throw ApiException(
+                        "旧 token 续期失败：refresh token失效",
+                        retryError.httpStatus,
+                        retryError.durationMs,
+                        retryError.retryCount,
+                        "mileage_energy_recent"
+                    )
+                }
+                throw retryError
+            }
+        }
+        if (isOldAuthFailure(response)) {
+            if (authenticationRefreshAttempted) {
+                throw ApiException(
+                    "旧 token 续期失败：refresh token失效",
+                    stage = "mileage_energy_recent"
+                )
+            }
+            refreshOldToken()
+            response = attempt()
+            if (isOldAuthFailure(response)) {
+                throw ApiException(
+                    "旧 token 续期失败：refresh token失效",
+                    stage = "mileage_energy_recent"
+                )
+            }
+        }
+        checkResult(response, "近7日里程查询")
+        return response
+    }
+
+    /**
+     * User-triggered raw probe for the weekly 100-km energy/rank endpoint.
+     * It uses the same legacy signing, VIN and route fallback as mileage energy,
+     * but deliberately does not interpret or discard business fields.
+     */
+    fun getDrivingRecordDebugRaw(
+        pathSuffix: String,
+        requestBody: String? = null
+    ): VehicleListRawResponse {
+        val suffix = pathSuffix.trim()
+            .let { if (it.startsWith('/')) it else "/$it" }
+        require(
+            suffix.length > 1 &&
+                !suffix.contains('?') &&
+                !suffix.contains('#') &&
+                !suffix.contains("..") &&
+                suffix.all { it.isLetterOrDigit() || it == '/' || it == '_' || it == '-' }
+        ) { "接口路径后缀格式不合法" }
+        requireVin()
+        if (isLastWeekEnergyEndpoint(suffix)) return getLastWeekEcRaw()
+        val bodyJson = requestBody?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            try {
+                JSONObject(it)
+            } catch (_: Exception) {
+                throw IllegalArgumentException("请求体必须是合法 JSON")
+            }
+        }
+        val fixedGetEndpoint = isMileageEnergyDetailEndpoint(suffix)
+        runCatching { ensureFreshOldToken() }
+
+        fun candidates(): List<String> = if (
+            isLastNWeeksEnergyEndpoint(suffix) || fixedGetEndpoint
+        ) {
+            // Driving-record energy endpoints are served by the international
+            // app gateway, not the newer global gateway.
+            listOf(DRIVING_RECORD_HOST)
+        } else buildList {
+            add(GLOBAL_HOST)
+            runCatching { ensureRoute() }.getOrNull()?.let { route ->
+                route.appRegion.takeIf { it.isNotBlank() }?.let(::add)
+                route.appCenter.takeIf { it.isNotBlank() }?.let(::add)
+            }
+        }.distinct()
+
+        fun attempt(): VehicleListRawResponse {
+            var last: VehicleListRawResponse? = null
+            // The weekly rank endpoint specifically requires the legacy
+            // `carvin` query parameter. Mileage detail keeps its verified
+            // `vin` contract. Keep that distinction before signing, because
+            // the gateway validates the business parameter name.
+            val vinKey = drivingRecordVinParameterKey(suffix)
+            val signed = if (fixedGetEndpoint) {
+                val range = DrivingRecordTimeRange.purchaseToToday(null, System.currentTimeMillis())
+                oldSignedParams(
+                    params = mileageEnergyDetailBusinessParameters(
+                        vin = bodyJson?.optString("vin")?.takeIf { it.isNotBlank() }
+                            ?: session.selectedVin,
+                        range = range
+                    ),
+                    includeTimespan = false
+                )
+            } else {
+                oldSignedParams(
+                    mapOf(
+                        vinKey to (
+                            bodyJson?.optString(vinKey)?.takeIf { it.isNotBlank() }
+                                ?: session.selectedVin
+                        )
+                    )
+                )
+            }
+            val headers = combinedAppAndGatewayHeaders(signed, needLogin = true)
+            for (host in candidates()) {
+                val response = httpRaw(
+                    "$host$DRIVING_RECORD_DEBUG_PREFIX$suffix",
+                    // The verified mileage/energy detail contract is GET with
+                    // signed query parameters. Custom debug paths may still
+                    // opt into POST by supplying a JSON request body.
+                    method = if (bodyJson != null && !fixedGetEndpoint) "POST" else "GET",
+                    headers = headers,
+                    query = signed,
+                    jsonBody = bodyJson?.takeUnless { fixedGetEndpoint }
+                )
+                last = response
+                if (response.isHttpSuccessful) return response
+            }
+            return last ?: throw ApiException("周能耗排行接口请求失败", stage = "energy_rank")
+        }
+
+        var response = attempt()
+        if (response.statusCode == 401 || response.statusCode == 403) {
+            refreshOldToken()
+            response = attempt()
+        } else if (response.isHttpSuccessful && isOldAuthFailure(runCatching { JSONObject(response.rawBody) }.getOrNull() ?: JSONObject())) {
+            refreshOldToken()
+            response = attempt()
+        }
+        return response
+    }
+
+    /** Last-week energy composition endpoint used by the v3 GET contract. */
+    private fun getLastWeekEcRaw(retriedAfterRefresh: Boolean = false): VehicleListRawResponse {
+        runCatching { ensureFreshOldToken() }
+        val range = DrivingRecordTimeRange.previousWeek(System.currentTimeMillis())
+        val begin = range.beginTime.toString()
+        val end = range.endTime.toString()
+        val carvin = session.selectedVin
+        // The v3 GET endpoint uses the international business parameters, but
+        // still requires the legacy request signature fields. oldSignedParams
+        // adds timespan/nonce/deviceID and calculates signStr with the token;
+        // the token itself remains in the legacy request header.
+        val query = oldSignedParams(
+            mapOf(
+                "begintime" to begin,
+                "endtime" to end,
+                "carvin" to carvin
+            )
+        )
+        val headers = combinedAppAndGatewayHeaders(query, needLogin = true)
+        var response = httpRaw(
+            "$DRIVING_RECORD_HOST$LAST_WEEK_EC_PATH",
+            method = "GET",
+            headers = headers,
+            query = query
+        )
+        if (!retriedAfterRefresh &&
+            (response.statusCode == 401 || response.statusCode == 403 ||
+                (response.isHttpSuccessful && isOldAuthFailure(
+                    runCatching { JSONObject(response.rawBody) }.getOrNull() ?: JSONObject()
+                )))
+        ) {
+            refreshOldToken()
+            response = getLastWeekEcRaw(retriedAfterRefresh = true)
+        }
+        return response
+    }
+
+    fun getLastNWeeks100kmEcAndRankRaw(): VehicleListRawResponse =
+        getDrivingRecordDebugRaw(LAST_N_WEEKS_100KM_EC_RANK_PATH.removePrefix(DRIVING_RECORD_DEBUG_PREFIX))
+
+    /** Typed read-only response used by the Energy screen. */
+    fun getLastNWeeks100kmEcAndRank(): JSONObject {
+        val raw = getLastNWeeks100kmEcAndRankRaw()
+        if (!raw.isHttpSuccessful) {
+            throw ApiException(
+                "周能耗排行接口请求失败（HTTP ${raw.statusCode}）",
+                httpStatus = raw.statusCode,
+                stage = "energy_rank"
+            )
+        }
+        val response = JSONObject(raw.rawBody)
+        checkResult(response, "周能耗排行查询")
+        return response
+    }
+
+    /** Typed read-only response for the previous week's energy composition. */
+    fun getLastWeekEc(): JSONObject {
+        val raw = getLastWeekEcRaw()
+        if (!raw.isHttpSuccessful) {
+            throw ApiException(
+                "上周能耗构成接口请求失败（HTTP ${raw.statusCode}）",
+                httpStatus = raw.statusCode,
+                stage = "energy_last_week_composition"
+            )
+        }
+        val response = JSONObject(raw.rawBody)
+        checkResult(response, "上周能耗构成查询")
+        return response
+    }
+
+    /**
+     * 同步蓝牙钥匙证书。
+     *
+     * ## 为什么要试两个域名
+     * 这个接口（`bluetoothkey/combine/syncBluetoothKeys`）在零跑的两套网关上都存在，
+     * 但路由与鉴权方式不一样：
+     * - 官方 App 用的是「按账号下发的 appCenter 域名 + 旧签名」；
+     * - 项目里其它 `/carownerservice/v3/api/...` 读接口走的是公开网关
+     *   `appgateway.leapmotor.com`（[DRIVING_RECORD_HOST]）。
+     *
+     * 实测两者对同一路径的响应不同（一个 404 Route Not Found、一个返回业务结果码），
+     * 而账号所属的 appCenter 又因账号而异。所以先按官方域名来，失败再换公开网关重试一次，
+     * 两次都失败才报错，并且把两次的原因都带出来 —— 原来一律显示「请检查网络」，
+     * 把「路由不对」「签名被拒」全都伪装成网络问题，根本没法定位。
+     */
+    fun fetchBluetoothKeyCertificate(): BleKeyCertificate {
+        requireBluetoothCertificateSession()
+        ensureFreshOldToken()
+        if (session.route?.appCenter.isNullOrBlank()) getCarRoute()
+
+        val execute: (Request) -> VehicleListRawResponse = { request ->
+            bluetoothCertificateHttpClient.newCall(request).execute().use { response ->
+                VehicleListRawResponse(response.code, response.body?.string().orEmpty())
+            }
+        }
+
+        val failures = mutableListOf<String>()
+        runCatching { fetchBluetoothKeyCertificate({ buildBluetoothCertificateRequest() }, execute) }
+            .onSuccess { return it }
+            .onFailure { failures += it.bleFailureReason() }
+
+        runCatching {
+            fetchBluetoothKeyCertificate({ buildBluetoothCertificateRequest(onGateway = true) }, execute)
+        }
+            .onSuccess { return it }
+            .onFailure { failures += "公开网关 " + it.bleFailureReason() }
+
+        throw ApiException(
+            "蓝牙钥匙同步失败（${failures.joinToString("；")}）",
+            stage = "ble_certificate"
+        )
+    }
+
+    /** 失败原因要能一眼看出是哪一步：HTTP 码 / 业务结果码 / 解析错误各不一样。 */
+    private fun Throwable.bleFailureReason(): String {
+        val text = (this as? ApiException)?.message?.takeIf { it.isNotBlank() }
+            ?: message?.takeIf { it.isNotBlank() }
+            ?: "未知错误"
+        return text.removePrefix("蓝牙钥匙证书")
+    }
+
+    internal fun fetchBluetoothKeyCertificate(
+        execute: (Request) -> VehicleListRawResponse
+    ): BleKeyCertificate = fetchBluetoothKeyCertificate({ buildBluetoothCertificateRequest() }, execute)
+
+    internal fun fetchBluetoothKeyCertificate(
+        build: () -> Request,
+        execute: (Request) -> VehicleListRawResponse
+    ): BleKeyCertificate {
+        val request = build()
+        val response = try {
+            execute(request)
+        } catch (_: Exception) {
+            throw ApiException("蓝牙钥匙证书同步连接失败，请稍后重试", stage = "ble_certificate")
+        }
+        if (!response.isHttpSuccessful) {
+            throw ApiException(
+                "蓝牙钥匙证书同步失败（HTTP ${response.statusCode}）",
+                httpStatus = response.statusCode,
+                stage = "ble_certificate"
+            )
+        }
+        val json = try {
+            JSONObject(response.rawBody)
+        } catch (_: Exception) {
+            throw ApiException("蓝牙钥匙证书响应格式无效", stage = "ble_certificate")
+        }
+        return try {
+            BleKeyCertificate.fromResponse(json, session.selectedVin)
+        } catch (error: IllegalArgumentException) {
+            throw ApiException(error.message ?: "蓝牙钥匙证书无效", stage = "ble_certificate")
+        }
+    }
+
+    /**
+     * 构造证书请求。
+     *
+     * @param onGateway true = 走公开网关（[DRIVING_RECORD_HOST]）并带上新网关请求头；
+     *   false = 走账号下发的主域名（`route.appCenter`），只用旧签名头。
+     */
+    internal fun buildBluetoothCertificateRequest(onGateway: Boolean = false): Request {
+        requireBluetoothCertificateSession()
+        val signed = oldSignedParams(mapOf("vin" to session.selectedVin))
+        val body = FormBody.Builder().apply {
+            signed.forEach { (key, value) -> add(key, value) }
+        }.build()
+        val url = if (onGateway) {
+            requireNotNull("$DRIVING_RECORD_HOST$BLUETOOTH_CERTIFICATE_PATH".toHttpUrlOrNull()) {
+                "蓝牙钥匙网关地址无效"
+            }
+        } else {
+            val center = session.route?.appCenter?.toHttpUrlOrNull()
+                ?: throw ApiException("缺少车辆蓝牙钥匙服务路由", stage = "ble_certificate")
+            if (!center.isHttps || center.username.isNotEmpty() || center.password.isNotEmpty() ||
+                center.query != null || center.fragment != null || center.encodedPath != "/" ||
+                !(center.host.endsWith(".leapmotor.cn") || center.host.endsWith(".leapmotor.com"))
+            ) {
+                throw ApiException("车辆蓝牙钥匙服务路由无效", stage = "ble_certificate")
+            }
+            center.newBuilder().encodedPath(BLUETOOTH_CERTIFICATE_PATH).build()
+        }
+        val headers = if (onGateway) combinedAppAndGatewayHeaders(signed) else oldAppHeaders()
+        return Request.Builder()
+            .url(url)
+            .post(body)
+            .apply { headers.forEach { (key, value) -> header(key, value) } }
+            .header("APPVersion", session.appVersion)
+            .build()
+    }
+
+    private fun requireBluetoothCertificateSession() {
+        if (session.oldAuth?.token.isNullOrBlank() || session.oldAuth?.accountId.isNullOrBlank()) {
+            throw ApiException("请先登录后同步蓝牙钥匙", stage = "ble_certificate")
+        }
+        if (session.deviceId.isBlank() || session.selectedVin.isBlank()) {
+            throw ApiException("请先选择车辆并确认设备信息", stage = "ble_certificate")
+        }
+    }
+
+    /** Read advisory metadata only when the Bluetooth management flow requests it. */
+    fun getBluetoothVehicleMetadata(): BleVehicleMetadata? = getBluetoothVehicleMetadata(
+        execute = ::executeBluetoothCloudRequest,
+        refreshSession = { refreshBluetoothCloudTokens(needsOldToken = false) }
+    )
+
+    internal fun getBluetoothVehicleMetadata(
+        execute: (Request) -> VehicleListRawResponse,
+        fetchedAtMillis: Long? = null,
+        refreshSession: () -> Unit = {}
+    ): BleVehicleMetadata? {
+        val scope = prepareBluetoothCloudRequest(BLUETOOTH_METADATA_STAGE, needsOldToken = false, refreshSession = refreshSession)
+        val response = bluetoothCloudResponse(buildBluetoothVehicleMetadataRequest(), BLUETOOTH_METADATA_STAGE, scope, execute)
+        return try {
+            BleVehicleMetadata.fromResponse(response, scope.vin, fetchedAtMillis ?: System.currentTimeMillis())
+                .also { requireBluetoothCloudScope(scope, BLUETOOTH_METADATA_STAGE) }
+        } catch (_: IllegalArgumentException) {
+            throw ApiException("车辆蓝牙配置响应无效", stage = BLUETOOTH_METADATA_STAGE)
+        }
+    }
+
+    /**
+     * 查询车辆通用配置表 (GET /carownerservice/v3/api/vehicleinfo/commonConfig)
+     * 返回云端保存的 config (包含 3: 充电计划 ChargePlan, 4: 蓝牙钥匙硬件参数等)。
+     */
+    fun getVehicleCommonConfig(): JSONObject? {
+        if (session.selectedVin.isBlank() || session.deviceId.isBlank()) return null
+        return try {
+            val scope = prepareBluetoothCloudRequest(BLUETOOTH_METADATA_STAGE, needsOldToken = false, refreshSession = {
+                refreshBluetoothCloudTokens(needsOldToken = false)
+            })
+            val response = bluetoothCloudResponse(buildBluetoothVehicleMetadataRequest(), BLUETOOTH_METADATA_STAGE, scope, ::executeBluetoothCloudRequest)
+            BleCloudApiModels.requireSuccess(response)
+            val data = response.optJSONObject("data") ?: return null
+            data.optJSONObject("config")
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * 获取车辆云端充电计划 (从 commonConfig 的 config.3 解析)。
+     */
+    fun getVehicleChargePlan(): VehicleChargePlan? {
+        val config = getVehicleCommonConfig() ?: return null
+        return VehicleChargePlan.fromConfig(config)
+    }
+
+    /** Cloud acceptance does not mean the vehicle has applied these preferences. */
+    fun uploadBluetoothConfiguration(configuration: BlePassiveConfiguration) {
+        uploadBluetoothConfiguration(configuration,
+            refreshSession = { refreshBluetoothCloudTokens(needsOldToken = true) },
+            execute = ::executeBluetoothCloudRequest)
+    }
+
+    internal fun uploadBluetoothConfiguration(
+        configuration: BlePassiveConfiguration,
+        execute: (Request) -> VehicleListRawResponse
+    ) = uploadBluetoothConfiguration(configuration, refreshSession = {}, execute = execute)
+
+    internal fun uploadBluetoothConfiguration(
+        configuration: BlePassiveConfiguration,
+        refreshSession: () -> Unit,
+        execute: (Request) -> VehicleListRawResponse
+    ) {
+        val scope = prepareBluetoothCloudRequest(BLUETOOTH_CONFIGURATION_STAGE, needsOldToken = true, refreshSession = refreshSession)
+        bluetoothCloudResponse(buildBluetoothConfigurationRequest(configuration), BLUETOOTH_CONFIGURATION_STAGE, scope, execute)
+    }
+
+    /** A null value deletes the cloud calibration; it does not reset the vehicle configuration. */
+    fun uploadBluetoothCalibration(params: String?, model: String) {
+        uploadBluetoothCalibration(params, model,
+            refreshSession = { refreshBluetoothCloudTokens(needsOldToken = true) },
+            execute = ::executeBluetoothCloudRequest)
+    }
+
+    internal fun uploadBluetoothCalibration(
+        params: String?,
+        model: String,
+        execute: (Request) -> VehicleListRawResponse
+    ) = uploadBluetoothCalibration(params, model, refreshSession = {}, execute = execute)
+
+    internal fun uploadBluetoothCalibration(
+        params: String?,
+        model: String,
+        refreshSession: () -> Unit,
+        execute: (Request) -> VehicleListRawResponse
+    ) {
+        bluetoothCalibrationParameters(params, model)
+        val scope = prepareBluetoothCloudRequest(BLUETOOTH_CALIBRATION_STAGE, needsOldToken = true, refreshSession = refreshSession)
+        bluetoothCloudResponse(buildBluetoothCalibrationRequest(params, model), BLUETOOTH_CALIBRATION_STAGE, scope, execute)
+    }
+
+    internal fun buildBluetoothVehicleMetadataRequest(): Request {
+        val params = linkedMapOf("appVersion" to session.appVersion, "osType" to "Android", "vin" to session.selectedVin)
+        return buildBluetoothCloudRequest(BLUETOOTH_VEHICLE_METADATA_PATH, params, BLUETOOTH_METADATA_STAGE, upload = false)
+    }
+
+    internal fun buildBluetoothConfigurationRequest(configuration: BlePassiveConfiguration): Request {
+        requireBluetoothCloudSession(BLUETOOTH_CONFIGURATION_STAGE, needsOldToken = true)
+        return buildBluetoothCloudRequest(
+            BLUETOOTH_CONFIGURATION_PATH,
+            BleCloudApiModels.configurationParameters(session.selectedVin, configuration),
+            BLUETOOTH_CONFIGURATION_STAGE,
+            upload = true
+        )
+    }
+
+    internal fun buildBluetoothCalibrationRequest(params: String?, model: String): Request =
+        buildBluetoothCloudRequest(
+            BLUETOOTH_CALIBRATION_PATH, bluetoothCalibrationParameters(params, model),
+            BLUETOOTH_CALIBRATION_STAGE, upload = true
+        )
+
+    /**
+     * 上报蓝牙钥匙锁控操作记录 (对齐官方实车抓包 uploadRecords 规范)。
+     * optDesc: "0" = 解锁, "1" = 上锁
+     * optResult: "0" = 成功
+     * sendType: "4" = 蓝牙物理直连通道
+     */
+    fun uploadBluetoothRecord(action: com.leapcontrol.app.bluetooth.BleLockAction, optTimeEpochMs: Long = System.currentTimeMillis()) {
+        if (session.selectedVin.isBlank() || session.deviceId.isBlank()) return
+        val optDesc = if (action == com.leapcontrol.app.bluetooth.BleLockAction.LOCK) "1" else "0"
+        val item = JSONObject()
+            .put("optDesc", optDesc)
+            .put("optResult", "0")
+            .put("optTime", optTimeEpochMs.toString())
+            .put("optType", "1")
+            .put("sendType", "4")
+            .put("vin", session.selectedVin)
+        val records = JSONObject()
+            .put("devType", "Android")
+            .put("list", JSONArray().put(item))
+        val params = linkedMapOf(
+            "records" to records.toString()
+        )
+        val fields = oldSignedParams(params)
+        val url = "$DRIVING_RECORD_HOST$BLUETOOTH_UPLOAD_RECORDS_PATH".toHttpUrlOrNull() ?: return
+        val body = FormBody.Builder().apply {
+            fields.forEach { (k, v) -> add(k, v) }
+        }.build()
+        val request = Request.Builder()
+            .url(url)
+            .post(body)
+            .apply {
+                newGatewayHeaders(fields, needLogin = true).forEach { (k, v) -> header(k, v) }
+            }
+            .build()
+        runCatching {
+            bluetoothCertificateHttpClient.newCall(request).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    android.util.Log.w("LeapmotorApi", "蓝牙控车记录上报失败: HTTP ${resp.code}")
+                }
+            }
+        }
+    }
+
+    private fun bluetoothCalibrationParameters(params: String?, model: String): Map<String, String> = try {
+        BleCloudApiModels.calibrationParameters(session.selectedVin, params, model)
+    } catch (_: IllegalArgumentException) {
+        throw ApiException("蓝牙标定参数无效", stage = BLUETOOTH_CALIBRATION_STAGE)
+    }
+
+    private fun buildBluetoothCloudRequest(
+        path: String,
+        params: Map<String, String>,
+        stage: String,
+        upload: Boolean
+    ): Request = try {
+        requireBluetoothCloudSession(stage, needsOldToken = upload)
+        val fields = if (upload) oldSignedParams(params) else params
+        val host = if (upload) GLOBAL_HOST else DRIVING_RECORD_HOST
+        val url = requireNotNull("$host$path".toHttpUrlOrNull()).newBuilder().apply {
+            if (!upload) fields.forEach { (key, value) -> addQueryParameter(key, value) }
+        }.build()
+        Request.Builder().url(url).apply {
+            if (upload) post(FormBody.Builder().apply {
+                fields.forEach { (key, value) -> add(key, value) }
+            }.build()) else get()
+            newGatewayHeaders(fields, needLogin = true, signingKeyOverride = bluetoothSigningKey(stage)).forEach {
+                (key, value) -> header(key, value)
+            }
+        }.build()
+    } catch (_: Exception) {
+        throw ApiException("无法构造蓝牙云端请求，请检查登录状态与车辆信息", stage = stage)
+    }
+
+    private fun bluetoothSigningKey(stage: String): ByteArray {
+        val raw = session.newAuth?.signKeyBase64 ?: throw ApiException("缺少蓝牙云端签名密钥", stage = stage)
+        return try {
+            java.util.Base64.getDecoder().decode(raw.filterNot { it == ' ' || it in '\t'..'\r' })
+        } catch (_: IllegalArgumentException) {
+            throw ApiException("蓝牙云端签名密钥格式无效", stage = stage)
+        }
+    }
+
+    private fun requireBluetoothCloudSession(stage: String, needsOldToken: Boolean) {
+        val gateway = session.newAuth
+        val oldAccountId = session.oldAuth?.accountId
+        if (!oldAccountId.isNullOrBlank() && gateway != null && gateway.accountId.isNotBlank() &&
+            oldAccountId != gateway.accountId
+        ) throw ApiException("蓝牙登录身份不一致，请重新登录后重试", stage = stage)
+        if (session.deviceId.isBlank() || session.selectedVin.isBlank() || session.appVersion.isBlank() ||
+            gateway == null || gateway.accountId.isBlank() || gateway.accessToken.isBlank() || gateway.signKeyBase64.isBlank() ||
+            (needsOldToken && (session.oldAuth?.accountId.isNullOrBlank() || session.oldAuth?.token.isNullOrBlank()))
+        ) throw ApiException("请先登录并选择车辆后管理蓝牙钥匙", stage = stage)
+    }
+
+    private fun prepareBluetoothCloudRequest(
+        stage: String,
+        needsOldToken: Boolean,
+        refreshSession: () -> Unit
+    ): BleCloudRequestScope {
+        requireBluetoothCloudSession(stage, needsOldToken)
+        val scope = BleCloudRequestScope.capture(session)
+        try {
+            withBluetoothPreflightTransport(refreshSession)
+            requireBluetoothCloudSession(stage, needsOldToken)
+        } catch (_: Exception) {
+            requireBluetoothCloudScope(scope, stage)
+            throw ApiException("蓝牙云端登录状态更新失败，请稍后重试", stage = stage)
+        }
+        requireBluetoothCloudScope(scope, stage)
+        return scope
+    }
+
+    private fun <T> withBluetoothPreflightTransport(block: () -> T): T {
+        val previous = bluetoothPreflightHttpClient.get()
+        bluetoothPreflightHttpClient.set(bluetoothCertificateHttpClient)
+        return try {
+            block()
+        } finally {
+            if (previous == null) bluetoothPreflightHttpClient.remove() else bluetoothPreflightHttpClient.set(previous)
+        }
+    }
+
+    private fun refreshBluetoothCloudTokens(needsOldToken: Boolean) {
+        if (needsOldToken) ensureFreshOldToken()
+        ensureFreshAccessToken()
+    }
+
+    private fun requireBluetoothCloudScope(scope: BleCloudRequestScope, stage: String) {
+        if (!scope.matches(session)) throw ApiException("蓝牙身份信息已变化，请重新同步钥匙后重试", stage = stage)
+    }
+
+    private fun executeBluetoothCloudRequest(request: Request): VehicleListRawResponse =
+        bluetoothCertificateHttpClient.newCall(request).execute().use { response ->
+            VehicleListRawResponse(response.code, response.body?.string().orEmpty())
+        }
+
+    private fun bluetoothCloudResponse(
+        request: Request,
+        stage: String,
+        scope: BleCloudRequestScope,
+        execute: (Request) -> VehicleListRawResponse
+    ): JSONObject {
+        requireBluetoothCloudScope(scope, stage)
+        val response = try { execute(request) } catch (_: Exception) {
+            throw ApiException("蓝牙云端请求连接失败，请稍后重试", stage = stage)
+        } finally {
+            requireBluetoothCloudScope(scope, stage)
+        }
+        if (!response.isHttpSuccessful) throw ApiException(
+            "蓝牙云端请求失败（HTTP ${response.statusCode}）", httpStatus = response.statusCode, stage = stage
+        )
+        return try {
+            JSONObject(response.rawBody).also(BleCloudApiModels::requireSuccess)
+        } catch (_: Exception) {
+            throw ApiException("蓝牙云端未确认请求成功，请稍后重试", stage = stage)
+        } finally {
+            requireBluetoothCloudScope(scope, stage)
+        }
+    }
+
+    fun getCarRoute(): RouteData {
+        requireVin()
+        val params = mapOf("vin" to session.selectedVin)
+        val resp = gatewayFetch(
+            "$GLOBAL_HOST/app/app-global-service/v1/vehicle/getCarRoute", "GET", params, params
+        )
+        val route = resp.optJSONObject("data")?.let { routeFrom(it) }
+            ?: findObject(resp) { it.has("appRegion") || it.has("appCenter") }?.let { routeFrom(it) }
+            ?: throw ApiException("车辆信息没取到，请稍后重试", stage = "vehicle_region")
+        session.route = route
+        return route
+    }
+
+    private fun ensureRoute(): RouteData {
+        requireVin()
+        session.route?.takeIf { it.appRegion.isNotBlank() }?.let { return it }
+        return getCarRoute()
+    }
+
+    /** 车况查询：返回服务器原始响应（调试用），signalMap 用 [extractSignalMap] 提取。 */
+    fun getVehicleStateRaw(): JSONObject {
+        val route = ensureRoute()
+        val body = JSONObject().apply { put("vin", session.selectedVin) }
+        return gatewayFetch(
+            "${route.appRegion}/app/app-signal-service/signal/info/query", "POST",
+            params = mapOf("vin" to session.selectedVin), jsonBody = body
+        )
+    }
+
+    /**
+     * 车型信号调试：只读返回服务器原始 signalMap，保留数字信号键，不做字段解码。
+     * 调用方不得持久化、上传或记录完整结果。
+     */
+    fun getVehicleSignalMap(): JSONObject {
+        val signalMap = extractSignalMap(getVehicleStateRaw())
+        if (signalMap.length() == 0) throw ApiException("车况没取到，请稍后重试", stage = "vehicle_state")
+        return signalMap
+    }
+
+    /** 车况查询：解码为命名字段的 signalMap（C16 数字信号协议）。 */
+    fun getVehicleState(): JSONObject {
+        val raw = getVehicleStateRaw()
+        val signalMap = extractSignalMap(raw)
+        if (signalMap.length() == 0) {
+            throw ApiException("车况没取到，请稍后重试", stage = "vehicle_state")
+        }
+        val decoded = SignalTable.decode(signalMap)
+        // 合并车端/网关可能下发的 config.3 充电计划
+        val config = raw.optJSONObject("data")?.optJSONObject("config") ?: raw.optJSONObject("config")
+        val chargePlan = config?.optJSONObject("3")
+        if (chargePlan != null) {
+            if (!decoded.has("chargeScheduleEnabled") && chargePlan.has("isEnable")) {
+                decoded.put("chargeScheduleEnabled", chargePlan.optInt("isEnable"))
+            }
+            if (!decoded.has("chargeScheduleStart") && chargePlan.has("beginTime")) {
+                decoded.put("chargeScheduleStart", chargePlan.optString("beginTime"))
+            }
+            if (!decoded.has("chargeScheduleEnd") && chargePlan.has("endTime")) {
+                decoded.put("chargeScheduleEnd", chargePlan.optString("endTime"))
+            }
+            if (!decoded.has("chargeScheduleCycles") && chargePlan.has("cycles")) {
+                decoded.put("chargeScheduleCycles", chargePlan.optString("cycles"))
+            }
+            if (!decoded.has("chargeScheduleCirculation") && chargePlan.has("circulation")) {
+                decoded.put("chargeScheduleCirculation", chargePlan.optInt("circulation"))
+            }
+            if (!decoded.has("chargeScheduleRecharge") && chargePlan.has("recharge")) {
+                decoded.put("chargeScheduleRecharge", chargePlan.optInt("recharge"))
+            }
+            if (!decoded.has("chargesocSetting") && chargePlan.has("percent")) {
+                decoded.put("chargesocSetting", chargePlan.optInt("percent"))
+            }
+        }
+        return decoded
+    }
+
+    /**
+     * 查车端驻车实景照片（GET `/carownerservice/v3/api/chassis/query`）。
+     *
+     * ## 为什么要返回「结论」而不是可空对象
+     * 这个接口在三种情况下都拿不到图：车还没上传、车型不支持、网络/签名失败。
+     * 用 `null` 一锅端，界面就只能写「获取失败，请重试」—— 而「车型不支持」这种情况
+     * 重试一万次也没用，用户应该做的是改用手机拍照。所以这里把结论分类带出去
+     * （分类规则见 [ChassisPhotoRules]，纯逻辑、有单测）。
+     *
+     * ## 为什么要挨个试域名
+     * 官方 App 走 `iov-api`；部分账号/大区的网关只认 `appgateway` 或车辆专属大区域名。
+     * 三条都试，命中即返回；只有「明确答复」（有图 / 没图 / 不支持）才提前结束，
+     * 网络异常继续试下一条。
+     */
+    fun queryParkingPhoto(): ChassisPhotoQuery {
+        val vin = session.selectedVin
+        if (vin.isBlank()) return ChassisPhotoQuery.Failed("未登录")
+        // 签名在未登录 / 未完成网关登录时会抛：这里也要变成「失败」返回，
+        // 不能让它冒到 UI 线程 —— 车端照片只是锦上添花，不该把整页搞崩
+        val signed = runCatching {
+            oldSignedParams(params = mapOf("vin" to vin), includeTimespan = true)
+        }.getOrElse { return ChassisPhotoQuery.Failed(it.message ?: "签名失败") }
+        val headers = runCatching {
+            combinedAppAndGatewayHeaders(signed, needLogin = true)
+        }.getOrElse { return ChassisPhotoQuery.Failed(it.message ?: "登录状态异常") }
+        val candidates = buildList {
+            add("https://iov-api.leapmotor.com/carownerservice/v3/api/chassis/query")
+            add("https://appgateway.leapmotor.com/carownerservice/v3/api/chassis/query")
+            session.route?.appRegion?.takeIf { it.isNotBlank() }?.let {
+                add("$it/carownerservice/v3/api/chassis/query")
+            }
+        }.distinct()
+
+        var last: ChassisPhotoQuery = ChassisPhotoQuery.Failed("无法连接车辆服务")
+        for (url in candidates) {
+            last = try {
+                val resp = http(url, method = "GET", headers = headers, query = signed)
+                val code = resp.optInt("code", resp.optInt("result", -1))
+                val message = resp.optString("message").ifBlank { resp.optString("msg") }
+                val data = resp.optJSONObject("data")
+                ChassisPhotoRules.classify(
+                    code = code,
+                    message = message,
+                    fileUrl = data?.optString("fileUrl").orEmpty(),
+                    uploadTimeMs = data?.optLong("uploadTime", 0L) ?: 0L,
+                )
+            } catch (e: Exception) {
+                ChassisPhotoQuery.Failed(e.message ?: "请求失败")
+            }
+            // 有图 / 明确说没有 / 明确说不支持 —— 都不必再问下一个域名
+            if (last !is ChassisPhotoQuery.Failed) return last
+        }
+        return last
+    }
+
+    /** 只要 URL 的老入口（保留给「有没有照片」这种不关心原因的调用方）。 */
+    fun getChassisParkingPhoto(): ChassisParkingPhoto? =
+        (queryParkingPhoto() as? ChassisPhotoQuery.Found)?.photo
+
+    /** 下载驻车照片并解码为 Bitmap。 */
+    fun downloadParkingPhotoBitmap(secureUrl: String): android.graphics.Bitmap? {
+        if (secureUrl.isBlank()) return null
+        return try {
+            val req = Request.Builder().url(secureUrl).get().build()
+            NetworkDebugController.httpClient().newCall(req).execute().use { response ->
+                if (response.isSuccessful) {
+                    val stream = response.body?.byteStream()
+                    if (stream != null) android.graphics.BitmapFactory.decodeStream(stream) else null
+                } else null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * 获取车辆 OTA 固件升级信息（调用 GET /carownerservice/v3/api/fota/getCurrentVersion）。
+     */
+    fun getVehicleOtaInfo(vin: String): VehicleOtaInfo? {
+        val cleanVin = vin.ifBlank { session.selectedVin }
+        if (cleanVin.isBlank()) return null
+        val routeHost = session.route?.appRegion?.takeIf { it.isNotBlank() } ?: runCatching { ensureRoute().appRegion }.getOrNull() ?: "https://appgateway.leapmotor.com"
+        val candidates = listOf(
+            "https://appgateway.leapmotor.com/carownerservice/v3/api/fota/getCurrentVersion",
+            "$routeHost/carownerservice/v3/api/fota/getCurrentVersion",
+            "https://app-gw-global-master.leapmotor.com/carownerservice/v3/api/fota/getCurrentVersion"
+        ).distinct()
+
+        val signedQuery = oldSignedParams(params = mapOf("vin" to cleanVin), includeTimespan = true)
+        val headers = combinedAppAndGatewayHeaders(params = signedQuery, needLogin = true)
+
+        var lastError: String? = null
+        for (url in candidates) {
+            // 1. 官方实机抓包首选通道：GET 请求 + signedQuery 签名参数 + 包含 signedQuery 参数的完整网关鉴权签名
+            try {
+                val resp = http(url, method = "GET", headers = headers, query = signedQuery)
+                android.util.Log.i("LeapOtaDebug", "getVehicleOtaInfo GET url=$url, resp=$resp")
+                val code = resp.optInt("code", resp.optInt("result", -1))
+                val isSuccess = code == 0 || code == 200 || resp.optString("message") == "请求成功" || resp.optString("msg").equals("success", ignoreCase = true)
+                if (isSuccess) {
+                    val data = resp.optJSONObject("data")
+                    return VehicleOtaInfo.fromJson(data, code.toString(), resp.optString("message"))
+                } else {
+                    lastError = resp.optString("message").ifBlank { resp.optString("msg", "查询失败($code)") }
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("LeapOtaDebug", "GET failed at $url: ${e.message}")
+                lastError = e.message
+            }
+
+            // 2. 备选尝试网关 JSON POST
+            try {
+                val params = mapOf("vin" to cleanVin, "carvin" to cleanVin)
+                val resp = gatewayFetch(url, method = "POST", params = params, jsonBody = JSONObject(params))
+                android.util.Log.i("LeapOtaDebug", "getVehicleOtaInfo POST JSON url=$url, resp=$resp")
+                val code = resp.optInt("code", resp.optInt("result", -1))
+                val isSuccess = code == 0 || code == 200 || resp.optString("message") == "请求成功" || resp.optString("msg").equals("success", ignoreCase = true)
+                if (isSuccess) {
+                    val data = resp.optJSONObject("data")
+                    return VehicleOtaInfo.fromJson(data, code.toString(), resp.optString("message"))
+                } else {
+                    lastError = resp.optString("message").ifBlank { resp.optString("msg", "查询失败($code)") }
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("LeapOtaDebug", "POST JSON failed at $url: ${e.message}")
+                if (lastError == null) lastError = e.message
+            }
+        }
+
+        if (lastError != null) {
+            throw ApiException(lastError)
+        }
+        return null
+    }
+
+    /**
+     * 重置 FOTA 状态（调用 POST /carownerservice/v3/api/fota/resetStatus）。
+     */
+    fun fotaResetStatus(vin: String): Boolean {
+        val cleanVin = vin.ifBlank { session.selectedVin }
+        if (cleanVin.isBlank()) return false
+        val signed = oldSignedParams(
+            params = mapOf("vin" to cleanVin),
+            includeTimespan = true
+        )
+        val headers = combinedAppAndGatewayHeaders(signed, needLogin = true)
+        val routeHost = session.route?.appRegion?.takeIf { it.isNotBlank() } ?: runCatching { ensureRoute().appRegion }.getOrNull() ?: "https://appgateway.leapmotor.com"
+        val url = "$routeHost/carownerservice/v3/api/fota/resetStatus"
+        return try {
+            val resp = http(url, method = "POST", headers = headers, query = signed, formBody = signed)
+            resp.optString("code") == "0" || resp.optInt("code", -1) == 0
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    // ---------------------------------------------------------------- 控车
+
+    /** 获取用于加密操作密码的 Token：优先网关 JWT accessToken，回退旧 token。 */
+    fun getOperationPasswordToken(): String {
+        val jwtToken = session.newAuth?.accessToken?.takeIf { it.isNotBlank() }
+        if (!jwtToken.isNullOrBlank()) return jwtToken
+        val oldToken = session.oldAuth?.token?.takeIf { it.isNotBlank() }
+        if (!oldToken.isNullOrBlank()) return oldToken
+        throw ApiException("未登录（缺少用于加密操作密码的 Token）")
+    }
+
+    /** 校验操作密码（对齐官方 verifyoperatepwdnew 接口）。校验成功返回 true，密码错误抛出 ApiException。 */
+    fun verifyOperatePassword(opPassword: String): Boolean {
+        require(opPassword.isNotBlank()) { "操作密码不能为空" }
+        requireVin()
+        val encToken = getOperationPasswordToken()
+        val params = LinkedHashMap<String, String>()
+        params["oprpwd"] = Crypto.encryptOperationPassword(opPassword, encToken)
+        params["vin"] = session.selectedVin
+        val signedBody = oldSignedParams(params)
+        val combinedHeaders = oldAppHeaders(true).toMutableMap().apply {
+            if (session.newAuth != null) {
+                putAll(newGatewayHeaders(signedBody, needLogin = true))
+            }
+        }
+        val route = ensureRoute()
+        val candidates = listOf(
+            "https://appgateway.leapmotor.com/carownerservice/v3/api/appoperate/verifyoperatepwdnew",
+            "${route.appRegion}/carownerservice/v3/api/appoperate/verifyoperatepwdnew"
+        ).distinct()
+        for (url in candidates) {
+            try {
+                val resp = http(url, method = "POST", headers = combinedHeaders, formBody = signedBody)
+                val code = resp.optString("code", resp.optString("result", ""))
+                if (code == "0" || code == "200") {
+                    return true
+                }
+                val msg = resp.optString("msg").ifEmpty { resp.optString("message", "操作密码错误") }
+                throw ApiException("操作密码校验失败($code): $msg")
+            } catch (e: Exception) {
+                if (e is ApiException && OperationPasswordErrorPolicy.isPasswordError(e)) {
+                    throw e
+                }
+            }
+        }
+        return false
+    }
+
+    /**
+     * 下发控车命令，返回 msgID 与原始响应（全部命令都需要操作密码）。对齐官方 api.log 链路。
+     *
+     * ## 为什么要在这里续期（2026-11-08）
+     *
+     * 用户反馈：桌面卡片写着「登录已失效」，点进 App 弹了框，点「稍后」之后**照样能控车**。
+     * 根因不是门禁漏装，而是这条链路自己把「token 过期」错报成了「登录失效」：
+     *
+     * - 其它接口（车况 / 里程 / 蓝牙）下发前都会 [ensureFreshOldToken] / [ensureFreshAccessToken]
+     *   提前续期，鉴权失败还会「续期 + 重发一次」（见 [gatewayFetch]）；
+     * - 只有控车这条既**不提前续期**、也**没有续期重发**：token 一过期，网关回 `result=39`
+     *   「信息校验失败」，被上层 [com.leapcontrol.app.ui.ControlFailure] 当成登录失效 → 落标记、弹框；
+     * - 而同期任何一次车况刷新都会把同一个 token 续上 —— 于是「说失效、其实能用」。
+     *
+     * 现在对齐读接口：发之前先续期；真收到鉴权失败就续期（旧 token + 网关 token 各试一次）
+     * 再发一次。**续得上就当没发生过；续不上才算真的登录失效**，这时报错才有意义。
+     */
+    fun sendControl(command: ControlCommand, opPassword: String): ControlResult {
+        require(opPassword.isNotBlank()) { "操作密码不能为空" }
+        requireVin()
+        // best-effort：续期失败不在这里报错，交给下面的「鉴权失败 → 续期 → 重发」兜底
+        runCatching { ensureFreshOldToken() }
+        runCatching { ensureFreshAccessToken() }
+
+        fun attempt(): ControlResult {
+            val route = ensureRoute()
+            // 每次重发都重新取加密用 token：续期后它已经换了
+            val encToken = getOperationPasswordToken()
+            val params = LinkedHashMap<String, String>()
+            params["cmdid"] = command.cmdid
+            params["state"] = command.stateJson
+            params["carvin"] = session.selectedVin
+            params["oppwd"] = Crypto.encryptOperationPassword(opPassword, encToken)
+            val signedBody = oldSignedParams(params)
+            val combinedHeaders = oldAppHeaders(true).toMutableMap().apply {
+                if (session.newAuth != null) {
+                    putAll(newGatewayHeaders(signedBody, needLogin = true))
+                }
+            }
+            val candidates = listOf(
+                "https://appgateway.leapmotor.com/app/app-control-service/v3/api/appremotectl",
+                "${route.appRegion}/app/app-control-service/v3/api/appremotectl"
+            ).distinct()
+
+            var lastException: Exception? = null
+            for (url in candidates) {
+                try {
+                    val resp = http(url, method = "POST", headers = combinedHeaders, formBody = signedBody)
+                    // 鉴权失败单独标 stage：调用方要靠它区分「续期就能好」和「业务失败」
+                    if (isOldAuthFailure(resp) || isAuthFailure(resp)) {
+                        throw ApiException(authMessageOf(resp), stage = CONTROL_AUTH_STAGE)
+                    }
+                    checkControlResult(resp)
+                    return ControlResult(msgID = extractMsgID(resp), raw = resp)
+                } catch (e: Exception) {
+                    lastException = e
+                }
+            }
+            throw (lastException ?: ApiException("控车请求发送失败"))
+        }
+
+        return try {
+            attempt()
+        } catch (e: ApiException) {
+            if (e.stage != CONTROL_AUTH_STAGE) throw e
+            // 两条续期路都试：旧 token（远控签名用）和网关 accessToken（加密操作密码用）
+            val oldRenewed = runCatching { refreshOldToken() }.isSuccess
+            val accessRenewed = runCatching { refreshAccessTokenWithFallback() }.isSuccess
+            if (!oldRenewed && !accessRenewed) {
+                throw ApiException(SESSION_EXPIRED_MESSAGE, stage = CONTROL_AUTH_STAGE)
+            }
+            try {
+                attempt()
+            } catch (retry: ApiException) {
+                // 续期都成功、重发仍被拒：这才是真的登录态没了，给一句能照做的说法
+                if (retry.stage == CONTROL_AUTH_STAGE) {
+                    throw ApiException(SESSION_EXPIRED_MESSAGE, stage = CONTROL_AUTH_STAGE)
+                }
+                throw retry
+            }
+        }
+    }
+
+    /**
+     * 鉴权失败时的报文：**一定要带上「登录已失效」四个字**。
+     *
+     * 上层按文案判定要不要落「登录失效」标记（[com.leapcontrol.app.ui.ControlFailure.isAuthFailure]），
+     * 而 401/403 这种只有状态码、没有中文 msg 的响应原本会翻成「控车失败(401): 」
+     * —— 落地后既看不懂、也不会被认成登录问题。
+     */
+    private fun authMessageOf(resp: JSONObject): String {
+        val code = resp.opt("result")?.toString()?.takeIf { it.isNotBlank() }
+            ?: resp.opt("code")?.toString()?.takeIf { it.isNotBlank() }
+            ?: "401"
+        val msg = resp.optString("msg").ifEmpty { resp.optString("message") }
+        return if (msg.isBlank()) {
+            "$SESSION_EXPIRED_MESSAGE（网关回应 $code）"
+        } else {
+            "$SESSION_EXPIRED_MESSAGE（控车失败($code): $msg）"
+        }
+    }
+
+    fun queryControlResult(msgID: String): JSONObject {
+        requireVin()
+        val route = ensureRoute()
+        val params = mapOf("msgID" to msgID)
+        val signedQuery = oldSignedParams(params)
+        val combinedHeaders = oldAppHeaders(true).toMutableMap().apply {
+            if (session.newAuth != null) {
+                putAll(newGatewayHeaders(signedQuery, needLogin = true))
+            }
+        }
+        val candidates = listOf(
+            "https://appgateway.leapmotor.com/app/app-control-service/v3/api/appremotectl/query",
+            "${route.appRegion}/app/app-control-service/v3/api/appremotectl/query"
+        ).distinct()
+
+        var lastException: Exception? = null
+        for (url in candidates) {
+            try {
+                val resp = http(url, headers = combinedHeaders, query = signedQuery)
+                return resp
+            } catch (e: Exception) {
+                lastException = e
+            }
+        }
+        throw (lastException ?: ApiException("控车结果查询失败"))
+    }
+
+    /** 电池健康充电控制（慢充目标电量限额与养护开关）。 */
+    fun setHealthyCharging(enabled: Boolean, targetSoc: Int): JSONObject {
+        requireVin()
+        val route = ensureRoute()
+        val url = "${route.appRegion}/carownerservice/v3/api/healthyCharging/control"
+        val stateInt = if (enabled) 1 else 0
+        val socInt = targetSoc.coerceIn(ChargeSchedule.MIN_LIMIT_SOC, ChargeSchedule.MAX_LIMIT_SOC)
+        val params = mapOf(
+            "carvin" to session.selectedVin,
+            "vin" to session.selectedVin,
+            "state" to stateInt.toString(),
+            "soc" to socInt.toString(),
+            "targetSoc" to socInt.toString()
+        )
+        return gatewayFetch(url, method = "POST", params = params, query = params, jsonBody = JSONObject(params))
+    }
+
+    /** 查询健康充电推送与策略状态。 */
+    fun queryHealthyChargingPushState(): JSONObject {
+        requireVin()
+        val route = ensureRoute()
+        val url = "${route.appRegion}/carownerservice/v3/api/healthyCharging/queryPushState"
+        val params = mapOf(
+            "carvin" to session.selectedVin,
+            "vin" to session.selectedVin
+        )
+        return gatewayFetch(url, method = "POST", params = params, query = params, jsonBody = JSONObject(params))
+    }
+
+    /**
+     * 谷电预约充电控制（插枪后在设定起止时间段内执行充电）。
+     * 默认 23:00 开始至次日 07:00 结束。
+     */
+    /**
+     * 充电计划 / 谷电预约充电控制（cmdid=190，RemoteActionCtlChargePlan）。
+     * 字段与零跑车联网底层完全对齐：
+     * chargeEnable: 是否启用（0/1）
+     * chargesoc: 目标限额百分比
+     * circulation: 循环模式（1=重复，0=单次）
+     * cycles: 星期几重复（"1,2,3,4,5,6,7"）
+     * starttime: 开始时间（"HH:mm"）
+     * endtime: 结束时间（"HH:mm"）
+     * recharge: 未达上限继续充电 / 自动再充（0/1）
+     */
+    fun setScheduledCharging(
+        enabled: Boolean,
+        startTime: String,
+        endTime: String,
+        targetSoc: Int = 80,
+        opPassword: String = "",
+        continueUntilLimit: Boolean = true,
+        circulation: Int = 1,
+        cycles: String = "1,2,3,4,5,6,7"
+    ): JSONObject {
+        requireVin()
+        try {
+            ensureFreshOldToken()
+        } catch (_: Exception) {}
+        val route = ensureRoute()
+        val old = session.oldAuth ?: throw ApiException("未登录（缺少旧凭证）")
+
+        val chargeEnableInt = if (enabled) 1 else 0
+        val rechargeInt = if (continueUntilLimit) 1 else 0
+        val vehicleCyclesMask = if (enabled && circulation == 1) {
+            ChargePlanCyclesHelper.toVehicleMask(cycles)
+        } else {
+            ""
+        }
+        val stateJson = JSONObject().apply {
+            put("chargeEnable", chargeEnableInt)
+            put("chargesoc", targetSoc.coerceIn(ChargeSchedule.MIN_LIMIT_SOC, ChargeSchedule.MAX_LIMIT_SOC))
+            put("circulation", if (enabled) circulation else 0)
+            put("cycles", vehicleCyclesMask)
+            put("starttime", startTime)
+            put("endtime", endTime)
+            put("recharge", rechargeInt)
+        }
+
+        val params = LinkedHashMap<String, String>()
+        params["cmdid"] = "190"
+        params["state"] = stateJson.toString()
+        params["carvin"] = session.selectedVin
+        if (opPassword.isNotBlank()) {
+            params["oppwd"] = Crypto.encryptOperationPassword(opPassword, getOperationPasswordToken())
+        }
+
+        // 1. 优先通道：走车控核心通道 (/app/app-control-service/v3/api/appremotectl) 带旧会话Token与加密码
+        val signedBody = oldSignedParams(params)
+        val headers = combinedAppAndGatewayHeaders(signedBody, needLogin = true)
+        val controlUrl = "${route.appRegion}/app/app-control-service/v3/api/appremotectl"
+        val respControl = try {
+            http(controlUrl, method = "POST", headers = headers, formBody = signedBody)
+        } catch (e: Exception) {
+            null
+        }
+        val codeCtrl = respControl?.optInt("code", respControl.optInt("result", -1)) ?: -1
+        if (codeCtrl == 0 || codeCtrl == 200) {
+            return respControl!!
+        }
+
+        // 2. 备选通道：走预约通道 (/carownerservice/v3/api/appremotectl/appointment)
+        val host = if (route.appCenter.isNotBlank()) route.appCenter else route.appRegion
+        val apptUrl = "$host/carownerservice/v3/api/appremotectl/appointment"
+        val respAppt = try {
+            http(apptUrl, method = "POST", headers = headers, formBody = signedBody)
+        } catch (e: Exception) {
+            null
+        }
+        val codeAppt = respAppt?.optInt("code", respAppt.optInt("result", -1)) ?: -1
+        if (codeAppt == 0 || codeAppt == 200) {
+            return respAppt!!
+        }
+
+        // 3. 独立日程服务同步兜底 (/schedule/operate)
+        val model = session.selectedCarType.ifBlank { "C16" }
+        val scheduleUrl = "${route.appRegion}/carownerservice/v3/api/schedule/operate"
+        val schedParams = linkedMapOf(
+            "carvin" to session.selectedVin,
+            "vin" to session.selectedVin,
+            "model" to model,
+            "type" to "1",
+            "state" to chargeEnableInt.toString(),
+            "status" to chargeEnableInt.toString(),
+            "startTime" to startTime,
+            "endTime" to endTime,
+            "repeat" to "1,2,3,4,5,6,7",
+            "cycle" to "1,2,3,4,5,6,7",
+            "continueCharge" to rechargeInt.toString(),
+            "continueUntilFull" to rechargeInt.toString()
+        )
+        return gatewayFetch(scheduleUrl, method = "POST", params = schedParams, formBody = schedParams)
+    }
+
+    /**
+     * 预约电池预热控制（cmdid=161，PTC Battery Heating Schedule）。
+     * controls 数组包装：on, set_id, start_time, update_time, days。
+     */
+    fun setScheduledBatteryPreheat(
+        enabled: Boolean,
+        startTime: String,
+        opPassword: String = "",
+        days: String = "1,1,1,1,1,1,1"
+    ): JSONObject {
+        requireVin()
+        try {
+            ensureFreshOldToken()
+        } catch (_: Exception) {}
+        val route = ensureRoute()
+        val old = session.oldAuth ?: throw ApiException("未登录（缺少旧凭证）")
+
+        val daySet = ChargePlanCyclesHelper.parseToDaySet(days)
+        val daysArray = JSONArray().apply {
+            ChargePlanCyclesHelper.toScheduleDaysIntList(daySet).forEach { put(it) }
+        }
+
+        val todayStr = java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd"))
+        val fullStartTime = if (startTime.length == 5) "$todayStr $startTime:00" else startTime
+
+        val stateJson = JSONObject().apply {
+            if (enabled) {
+                val item = JSONObject().apply {
+                    put("on", "1")
+                    put("set_id", "ptc_set_${System.currentTimeMillis()}")
+                    put("start_time", fullStartTime)
+                    put("update_time", System.currentTimeMillis().toString())
+                    put("days", daysArray)
+                }
+                put("controls", JSONArray().put(item))
+            } else {
+                put("controls", JSONArray())
+            }
+        }
+
+        val params = LinkedHashMap<String, String>()
+        params["cmdid"] = "161"
+        params["state"] = stateJson.toString()
+        params["carvin"] = session.selectedVin
+        if (opPassword.isNotBlank()) {
+            params["oppwd"] = Crypto.encryptOperationPassword(opPassword, getOperationPasswordToken())
+        }
+
+        // 直接走车控核心通道 (/app/app-control-service/v3/api/appremotectl)
+        val controlUrl = "${route.appRegion}/app/app-control-service/v3/api/appremotectl"
+        val signedBody = oldSignedParams(params)
+        val headers = combinedAppAndGatewayHeaders(signedBody, needLogin = true)
+        return http(controlUrl, method = "POST", headers = headers, formBody = signedBody)
+    }
+
+    /**
+     * 查询预约电池预热计划（cmdid=161）。
+     *
+     * 与 171 共用 `getappointment` 通道（官方抓包里两者只差 cmdid）。
+     * 返回 null = 查询失败；hasSchedule=false = 车端确实没有预约项。
+     * 页面靠它回显真实开关状态，而不是只在本地 SharedPreferences 里记一笔
+     * ——换机/清数据后就对不上车了。
+     */
+    fun getScheduledBatteryPreheat(): ScheduledPreheatState? {
+        val data = fetchAppointment(Commands.BATTERY_PREHEAT_CMD_ID) ?: return null
+        return ChargeSchedule.parsePreheatState(data)
+    }
+
+    /**
+     * GET getappointment：返回 `data` 原始值（可能是 JSON 字符串或对象）。
+     * 网关 result 非 0 视为失败，返回 null 让调用方保留本地状态。
+     */
+    private fun fetchAppointment(cmdId: String): Any? {
+        requireVin()
+        try {
+            ensureFreshOldToken()
+        } catch (_: Exception) {}
+        val route = ensureRoute()
+        val params = LinkedHashMap<String, String>()
+        params["cmdid"] = cmdId
+        params["carvin"] = session.selectedVin
+
+        val signedBody = oldSignedParams(params)
+        val headers = combinedAppAndGatewayHeaders(signedBody, needLogin = true)
+        val host = if (route.appCenter.isNotBlank()) route.appCenter else route.appRegion
+        val candidates = listOf(
+            "https://appgateway.leapmotor.com/carownerservice/v3/api/appremotectl/getappointment",
+            "$host/carownerservice/v3/api/appremotectl/getappointment"
+        ).distinct()
+
+        var lastException: Exception? = null
+        for (url in candidates) {
+            try {
+                val resp = http(url, headers = headers, query = signedBody)
+                val result = resp.opt("result")
+                if (result != null && result != JSONObject.NULL && result.toString() != "0") {
+                    return null
+                }
+                return resp.opt("data") ?: JSONObject.NULL
+            } catch (e: Exception) {
+                lastException = e
+            }
+        }
+        lastException?.let { throw it }
+        return null
+    }
+
+    /**
+     * 定时空调预约（cmdid=171）。
+     * 官方抓包：POST {appCenter}/carownerservice/v3/api/appremotectl/appointment
+     */
+    fun setScheduledAirConditioning(plan: ScheduledAcPlan, opPassword: String = ""): JSONObject {
+        requireVin()
+        try {
+            ensureFreshOldToken()
+        } catch (_: Exception) {}
+        val route = ensureRoute()
+        val command = Commands.buildScheduledAc(plan, session.deviceId)
+
+        val params = LinkedHashMap<String, String>()
+        params["cmdid"] = command.cmdid
+        params["state"] = command.stateJson
+        params["carvin"] = session.selectedVin
+        if (opPassword.isNotBlank()) {
+            params["oppwd"] = Crypto.encryptOperationPassword(opPassword, getOperationPasswordToken())
+        }
+
+        val signedBody = oldSignedParams(params)
+        val headers = combinedAppAndGatewayHeaders(signedBody, needLogin = true)
+        val host = if (route.appCenter.isNotBlank()) route.appCenter else route.appRegion
+        val candidates = listOf(
+            "https://appgateway.leapmotor.com/carownerservice/v3/api/appremotectl/appointment",
+            "$host/carownerservice/v3/api/appremotectl/appointment"
+        ).distinct()
+
+        var lastException: Exception? = null
+        for (url in candidates) {
+            try {
+                val resp = http(url, method = "POST", headers = headers, formBody = signedBody)
+                checkControlResult(resp)
+                return resp
+            } catch (e: Exception) {
+                lastException = e
+            }
+        }
+        throw (lastException ?: ApiException("定时空调设置失败"))
+    }
+
+    /**
+     * 查询定时空调预约（cmdid=171）。
+     * 官方抓包：GET {appCenter}/carownerservice/v3/api/appremotectl/getappointment
+     * 返回 null 表示查询失败；hasSchedule=false 表示车端没有预约项。
+     */
+    fun getScheduledAirConditioning(): ScheduledAcState? {
+        requireVin()
+        try {
+            ensureFreshOldToken()
+        } catch (_: Exception) {}
+        val route = ensureRoute()
+        val params = LinkedHashMap<String, String>()
+        params["cmdid"] = Commands.SCHEDULED_AC_CMD_ID
+        params["carvin"] = session.selectedVin
+
+        val signedBody = oldSignedParams(params)
+        val headers = combinedAppAndGatewayHeaders(signedBody, needLogin = true)
+        val host = if (route.appCenter.isNotBlank()) route.appCenter else route.appRegion
+        val candidates = listOf(
+            "https://appgateway.leapmotor.com/carownerservice/v3/api/appremotectl/getappointment",
+            "$host/carownerservice/v3/api/appremotectl/getappointment"
+        ).distinct()
+
+        var lastException: Exception? = null
+        for (url in candidates) {
+            try {
+                val resp = http(url, headers = headers, query = signedBody)
+                val result = resp.opt("result")
+                if (result != null && result != JSONObject.NULL && result.toString() != "0") {
+                    return null
+                }
+                return Commands.parseScheduledAc(resp.opt("data"))
+            } catch (e: Exception) {
+                lastException = e
+            }
+        }
+        lastException?.let { throw it }
+        return null
+    }
+
+    // ---------------------------------------------------------------- 内部
+
+    private fun gatewayFetch(
+        url: String,
+        method: String,
+        params: Map<String, String?> = emptyMap(),
+        query: Map<String, String?>? = null,
+        jsonBody: JSONObject? = null,
+        formBody: Map<String, String>? = null
+    ): JSONObject {
+        ensureFreshAccessToken()
+        val q = query ?: if (method == "GET") params else null
+        val attempt = { http(url, method, newGatewayHeaders(params, true), query = q, jsonBody = jsonBody, formBody = formBody) }
+        var resp = attempt()
+        if (isAuthFailure(resp)) {
+            refreshAccessTokenWithFallback()
+            resp = attempt()
+        }
+        return resp
+    }
+
+    private fun ensureFreshAccessToken() {
+        val auth = session.newAuth ?: throw ApiException("未登录")
+        if (auth.accessTokenExpiresAt > 0 &&
+            auth.accessTokenExpiresAt - System.currentTimeMillis() <= ACCESS_REFRESH_LEEWAY_MS
+        ) {
+            refreshAccessTokenWithFallback()
+        }
+    }
+
+    /** 网关 refresh token 可能已在旧版本中轮换，用旧链路续期后重新交换网关会话。 */
+    private fun refreshAccessTokenWithFallback() {
+        val previousAccessToken = session.newAuth?.accessToken
+        try {
+            refreshGatewayToken()
+            return
+        } catch (_: Exception) {
+            // Fall through to the still-supported old-token refresh path.
+        }
+        refreshOldToken()
+        if (session.newAuth?.accessToken == previousAccessToken) {
+            exchangeNewGateway()
+        }
+    }
+
+    fun ensureFreshOldToken() {
+        val old = session.oldAuth ?: throw ApiException("未登录")
+        val expiresAt = old.expiresAt()
+        if (expiresAt > 0 && expiresAt - System.currentTimeMillis() <= OLD_REFRESH_LEEWAY_MS) {
+            refreshOldToken()
+        }
+    }
+
+    private fun requireVin() {
+        if (session.selectedVin.isBlank()) throw ApiException("还没有选择车辆 VIN")
+    }
+
+    /** 从控车响应中提取 msgID：可能在嵌套对象里，也可能是 data 直接是字符串。 */
+    private fun extractMsgID(resp: JSONObject): String {
+        findObjectStatic(resp) { it.has("msgID") || it.has("msgId") || it.has("eventId") }?.let { obj ->
+            return obj.optString("msgID", "")
+                .ifBlank { obj.optString("msgId", "") }
+                .ifBlank { obj.optString("eventId", "") }
+        }
+        val data = resp.opt("data")
+        if (data != null && data != JSONObject.NULL && data !is JSONObject && data !is JSONArray) {
+            return data.toString()
+        }
+        return ""
+    }
+
+    private fun checkResult(resp: JSONObject, action: String) {
+        val result = resp.opt("result")
+        val code = resp.opt("code")
+        val value = when {
+            result != null && result != JSONObject.NULL -> result.toString()
+            code != null && code != JSONObject.NULL -> code.toString()
+            else -> return
+        }
+        if (value != "0" && value != "200") {
+            throw ApiException(
+                "$action 失败($value): ${resp.optString("msg").ifEmpty { resp.optString("message") }}"
+            )
+        }
+    }
+
+    private fun checkControlResult(resp: JSONObject) {
+        val result = resp.opt("result")
+        val code = resp.opt("code")
+        val value = when {
+            result != null && result != JSONObject.NULL -> result.toString()
+            code != null && code != JSONObject.NULL -> code.toString()
+            else -> return
+        }
+        if (value != "0" && value != "200") {
+            throw ApiException(
+                "控车失败($value): ${resp.optString("msg").ifEmpty { resp.optString("message") }}"
+            )
+        }
+    }
+
+    private fun isOldAuthFailure(resp: JSONObject): Boolean {
+        val result = resp.opt("result")
+        if (result != null && result.toString() == "39") return true
+        val message = resp.optString("msg").ifEmpty { resp.optString("message") }
+        return Regex("信息校验失败|第三方TOKEN失效|token.*失效|鉴权失败", RegexOption.IGNORE_CASE)
+            .containsMatchIn(message)
+    }
+
+    private fun isAuthFailure(resp: JSONObject): Boolean {
+        val code = resp.optString("code", "").ifEmpty {
+            resp.optString("result", "").ifEmpty { resp.optString("status", "") }
+        }
+        if (code == "401" || code == "403") return true
+        val message = (resp.optString("msg") + resp.optString("message") + resp.optString("error")).lowercase()
+        return Regex("token|登录|鉴权|认证").containsMatchIn(message) &&
+            Regex("expire|expired|invalid|过期|失效|无效|重新登录").containsMatchIn(message)
+    }
+
+    private fun routeFrom(o: JSONObject) = RouteData(
+        appRegion = o.optString("appRegion"),
+        appCenter = o.optString("appCenter")
+    )
+
+    private fun findObject(root: Any?, predicate: (JSONObject) -> Boolean): JSONObject? =
+        findObjectStatic(root, predicate)
+
+    private fun collectObjects(root: Any?, predicate: (JSONObject) -> Boolean): List<JSONObject> {
+        val out = mutableListOf<JSONObject>()
+        fun walk(node: Any?) {
+            if (node == null) return
+            if (node is JSONObject) {
+                if (predicate(node)) out.add(node)
+                val keys = node.keys()
+                while (keys.hasNext()) walk(node.opt(keys.next()))
+            } else if (node is JSONArray) {
+                for (i in 0 until node.length()) walk(node.opt(i))
+            }
+        }
+        walk(root)
+        return out
+    }
+}

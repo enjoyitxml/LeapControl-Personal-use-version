@@ -1,0 +1,1719 @@
+package com.leapcontrol.app.ui
+
+import android.content.Context
+import android.widget.Toast
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.FiberManualRecord
+import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.TouchApp
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.leapcontrol.app.BuildConfig
+import com.leapcontrol.app.ConfirmActions
+import com.leapcontrol.app.ParkingPhotoSource
+import com.leapcontrol.app.ParkingPhotoSourceRules
+import com.leapcontrol.app.QuickSwitchLock
+import com.leapcontrol.app.QuickSwitchMode
+import com.leapcontrol.app.SessionStore
+import com.leapcontrol.app.R
+import com.leapcontrol.app.tiles.QuickTiles
+import com.leapcontrol.app.widget.VehicleWidget
+import com.leapcontrol.app.journal.BaiduAsr
+import kotlinx.coroutines.launch
+
+/**
+ * 「设置」页（从「我的」进入）：功能与账号相关项。
+ *  - 自定义车名（仅本地保存，清空恢复官方昵称）
+ *  - 控车密码（4 位，官方 App 里设置的操控密码）
+ *  - 高德 Web Key（中文地址与目的地搜索；地图底图不需要）
+ *  - 刷新车模图片
+ *  - 系统控制中心快捷磁贴
+ *
+ * 本文件同时提供设置类页面共用的卡片 / 开关行 / 选项行组件，
+ * 供「个性化」「关于」两页复用。
+ */
+@Composable
+fun SettingsScreen(
+    runtime: AppRuntime,
+    onBack: () -> Unit,
+    /** 进来就弹出控车密码录入框（桌面小组件发现没设密码时把用户送到这里）。 */
+    startWithPin: Boolean = false,
+    /** 已经弹过了，让调用方把一次性标记清掉，避免退出再进又弹一次。 */
+    onPinDialogShown: () -> Unit = {},
+) {
+    val C = LocalAppColors.current
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    var showRename by remember { mutableStateOf(false) }
+    var showPin by remember { mutableStateOf(false) }
+    var showAmapKey by remember { mutableStateOf(false) }
+    // 电池容量：行程能耗把电量百分比换算成 kWh 要用它
+    var showBatteryKwh by remember { mutableStateOf(false) }
+    var batteryKwhSaved by remember { mutableStateOf(0) }
+    // 由外部请求打开密码框：只在进来那一刻处理一次
+    LaunchedEffect(startWithPin) {
+        if (startWithPin) {
+            showPin = true
+            onPinDialogShown()
+        }
+    }
+    // 「快捷控制再点一次」子页：勾选哪些动作要确认（桌面小组件 / 控制中心磁贴）
+    var showConfirmActions by remember { mutableStateOf(false) }
+    var confirmSummary by remember { mutableStateOf(ConfirmActions.summary(context)) }
+    // 发送到车机弹层（首页卡片与设置里的「搜一个地方」共用）
+    var showDestination by remember { mutableStateOf(false) }
+    var showAsrKey by remember { mutableStateOf(false) }
+    var showPowerType by remember { mutableStateOf(false) }
+    // 底部「回到顶部」按钮的动作：只回顶 / 回顶 + 刷新
+    var showBackToTopMode by remember { mutableStateOf(false) }
+    // 驻车拍照方案（手机拍照 / 车端照片）
+    var showPhotoSource by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var confirmGate by remember { mutableStateOf(runtime.biometricConfirmEnabled()) }
+    // 蓝牙钥匙详情页（从本页进入时以整页覆盖的形式出现，返回即回到设置）
+    var showBleKey by remember { mutableStateOf(false) }
+    // 蓝牙钥匙总开关「关 → 开」前的提示（适配性一般、建议用官方 App 钥匙）
+    var showBlePrompt by remember { mutableStateOf(false) }
+    LocalBleKeyHost.current?.let { host ->
+        if (showBleKey) {
+            BluetoothKeyScreen(host = host, onBack = { showBleKey = false })
+            return
+        }
+    }
+    if (showConfirmActions) {
+        // 子页里改的是 prefs，回来时重新读一遍摘要：不读的话那一行会一直显示旧的勾选结果
+        ConfirmSettingsScreen(
+            onBack = {
+                showConfirmActions = false
+                confirmSummary = ConfirmActions.summary(context)
+            },
+        )
+        return
+    }
+    // 「换壁纸怎么触发」整块搬去了「个性化 → 主题与背景」：外观相关的东西集中在那一页，
+    // 这一页只管「怎么运行」，两个页的分工才不会被用户来回猜。
+    // 零记总开关：关掉后语音 Key 这一项就没有服务对象了（语音只服务于灵感球），一起收起
+    val journalOn by runtime.journalEnabled
+    // 动力类型：null = 自动推断（按车型名 + 燃油信号），否则为用户手动指定
+    val powerOverride by runtime.powerTypeOverride
+    // 「自动识别」那行文案要跟着车况变，所以必须 collectAsState；
+    // 直接读 statusFlow.value 在组合里不会触发重组（Lint: StateFlowValueCalledInComposition）
+    val liveStatus by runtime.statusFlow.collectAsState()
+    // 驻车拍照方案：手机拍照（默认）/ 车端照片（部分车型）
+    val photoSource by runtime.parkingPhotoSource.collectAsState()
+    // 排查「滑动卡不卡」用的：能区分「掉帧」和「屏幕本来就只有 60Hz」两件事
+    val frameStatsOn by runtime.frameStatsVisible
+    // 回顶按钮是否顺带刷新：挂 runtime 的 State，选完退回首页立刻生效
+    val backToTopWithRefresh by runtime.backToTopWithRefresh
+    // 滑动性能日志开关：开着时每次首页滑动都会落一份逐帧日志，供排查掉帧
+    val perfLogOn by runtime.perfLogEnabled
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 22.dp),
+    ) {
+        Spacer(Modifier.height(12.dp))
+        SettingsTopBar(title = "设置", onBack = onBack)
+        Spacer(Modifier.height(14.dp))
+
+
+        // ====================================================================
+        // 分组顺序：车辆 → 控车与安全 → 快捷入口 → 数据与备份 → 地图与目的地 → 高级
+        // 只放「怎么运行」的东西；「看起来怎样」整块搬到「个性化」里去了，
+        // 两页各管一件事，用户不用猜「换壁纸到底该进哪个页」。
+        // ====================================================================
+
+        // ---- 1. 车辆：只决定这台车在零控里怎么称呼、怎么显示 ----
+        SettingsSection(title = "车辆", desc = "名称 · 动力 · 车模图") {
+            SettingsCard {
+                ClickRow(
+                    title = "自定义车名",
+                    desc = if (runtime.customName().isBlank()) {
+                        "当前：${runtime.displayName()}（官方昵称）"
+                    } else {
+                        "当前：${runtime.customName()}（仅保存在本机）"
+                    },
+                    iconRes = R.drawable.ic_edit,
+                ) { showRename = true }
+                Spacer(Modifier.height(10.dp))
+                // 动力类型：车端续航信号不全时（纯电 C01 只下发 2188、fuelSoc 恒为 0），
+                // 自动推断可能失手，这里给个能自己拍板的开关。按 VIN 保存。
+                ClickRow(
+                    title = "动力类型",
+                    desc = when (powerOverride) {
+                        SessionStore.VehiclePowerType.PURE_ELECTRIC -> "已手动设为纯电（只显示电量）"
+                        SessionStore.VehiclePowerType.RANGE_EXTENDER -> "已手动设为增程（电量 + 燃油）"
+                        null -> "自动识别：" + when (liveStatus?.isRangeExtender) {
+                            true -> "增程"
+                            false -> "纯电"
+                            null -> "待读取车况"
+                        }
+                    },
+                    iconRes = R.drawable.ic_nav_car,
+                ) { showPowerType = true }
+                Spacer(Modifier.height(10.dp))
+                ClickRow(
+                    title = "刷新车模图片",
+                    desc = if (runtime.hasCustomCarModel()) {
+                        "重新拉取官方图，当前显示的自定义车模不受影响"
+                    } else {
+                        "清除缓存并从官方接口重新拉取"
+                    },
+                    iconRes = R.drawable.ic_nav_car,
+                ) {
+                    scope.launch {
+                        // 只清官方缓存：用户改过色 / 导入的自定义车模要留住，
+                        // 否则点一下刷新就把他辛苦调的图弄没了
+                        runtime.clearCarImageCache()
+                        val ok = runCatching { runtime.fetchCarImage(force = true) }.getOrNull() != null
+                        // 桌面小组件存的是自己那份缩略图，得让它跟着换
+                        if (ok) runtime.refreshWidgetCarImage()
+                        message = when {
+                            ok && runtime.hasCustomCarModel() -> "官方车模已刷新（首页仍用你的自定义车模）"
+                            ok -> "车模已刷新"
+                            else -> "未取到官方车图，首页暂不显示车模"
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(18.dp))
+
+        // ---- 2. 控车与安全：下发指令前的两道闸，以及靠近解锁 ----
+        SettingsSection(title = "控车与安全", desc = "密码 · 确认 · 蓝牙钥匙") {
+            SettingsCard {
+                ClickRow(
+                    title = "控车密码",
+                    desc = if (runtime.hasPin) "已保存 4 位操控密码，点击修改" else "未设置，点击设置",
+                    iconRes = R.drawable.ic_qc_lock,
+                ) { showPin = true }
+                Spacer(Modifier.height(10.dp))
+                SwitchRow(
+                    label = "控车二次确认",
+                    desc = "主界面下发前弹窗确认（桌面小组件与控制中心走「再点一次」那套）",
+                    checked = confirmGate,
+                    onCheckedChange = {
+                        confirmGate = it
+                        runtime.setBiometricConfirmEnabled(it)
+                    },
+                )
+            }
+
+            // 蓝牙钥匙只放「总开关 + 一个进详情的入口」：感应距离、自动解锁这些在详情页里，
+            // 免得设置页被七八个开关撑满，也避免同一项设置在两处出现两份状态。
+            val bleHost = LocalBleKeyHost.current
+            if (bleHost != null) {
+                Spacer(Modifier.height(10.dp))
+                SettingsCard("蓝牙钥匙") {
+                    SwitchRow(
+                        label = "智能无感钥匙",
+                        desc = when {
+                            !bleHost.bound -> "还没有配对车辆，先点右侧进入配对吧"
+                            bleHost.pending -> "设置待车辆确认"
+                            bleHost.enabled -> "已开启，带着手机靠近车辆即可解锁"
+                            else -> "已关闭，配对记录保留"
+                        },
+                        checked = bleHost.enabled,
+                        onCheckedChange = { on ->
+                            if (!bleHost.bound) {
+                                message = "请先进入蓝牙钥匙页完成车辆配对"
+                            } else if (on && !bleHost.enabled) {
+                                // 开之前先过提示：这功能适配性一般，会和官方 App 抢蓝牙信道
+                                showBlePrompt = true
+                            } else {
+                                bleHost.toggleEnabled(on)
+                                message = bleHost.notice
+                            }
+                        },
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    ClickRow(
+                        title = "蓝牙钥匙设置",
+                        desc = "配对车辆 · 靠近解锁 · 感应距离",
+                        iconRes = R.drawable.ic_phosphor_key,
+                    ) { showBleKey = true }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(18.dp))
+
+        // ---- 3. 快捷入口：桌面 / 控制中心怎么点，以及回顶按钮做什么 ----
+        // 这三项都是「离开这个页面之后怎么操作」，跟车辆本身、跟数据都无关，单独成组。
+        SettingsSection(title = "快捷入口", desc = "磁贴 · 再点一次 · 回顶按钮") {
+            SettingsCard {
+                // 与 App 内「控车二次确认」是两件事：那个管页面里弹窗，这个管桌面 / 控制中心的「再点一次」。
+                // 默认全关 —— 那两个入口的意义就是一步到位。
+                ClickRow(
+                    title = "快捷控制再点一次",
+                    desc = confirmSummary,
+                    icon = Icons.Filled.TouchApp,
+                ) { showConfirmActions = true }
+                Spacer(Modifier.height(10.dp))
+                // 底部第一格下拉过一屏后会变成「回到顶部」图标，这里决定点它做不做刷新。
+                ClickRow(
+                    title = "回到顶部按钮",
+                    desc = if (backToTopWithRefresh) {
+                        "当前：回到顶部并刷新 · 点此改成只回顶"
+                    } else {
+                        "当前：只回到顶部，不刷新 · 点此改成回顶并刷新"
+                    },
+                    icon = Icons.Default.TouchApp,
+                    onClick = { showBackToTopMode = true },
+                )
+            }
+
+            Spacer(Modifier.height(10.dp))
+
+            var tileTick by remember { mutableStateOf(0) }
+            var notifTick by remember { mutableStateOf(0) }
+            // 磁贴控车的进度提示走通知横幅（后台 toast 会被 Android 12+ 丢掉，见 tiles/TileNotice），
+            // 所以在用户来加磁贴的这个位置把权限要下来 —— 否则点了磁贴一句反馈都看不到
+            val notifLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+                androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+            ) { granted ->
+                if (!granted) {
+                    Toast.makeText(
+                        context,
+                        "没给通知权限，控车时就看不到「正在上锁 / 已上锁」这些提示了",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+                notifTick++
+            }
+            val notifOn = remember(notifTick) { com.leapcontrol.app.tiles.TileNotice.enabled(context) }
+            val addedIds = remember(tileTick) {
+                QuickTiles.ALL.filter { QuickTiles.isAdded(context, it) }.map { it.id }.toSet()
+            }
+            SettingsCard("系统控制中心") {
+                Text(
+                    "点击图标即可添加到下拉控制中心，锁屏状态下也能直接控车",
+                    color = C.textSecondary,
+                    fontSize = 11.sp,
+                )
+                if (!notifOn) {
+                    Spacer(Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(C.chipBg)
+                            .clickable {
+                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                                    notifLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                                } else {
+                                    Toast.makeText(
+                                        context,
+                                        "请到「设置 → 应用 → 零控 → 通知」里允许通知",
+                                        Toast.LENGTH_LONG,
+                                    ).show()
+                                }
+                            }
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "开启通知，App 在后台时控车进度也能弹出提醒",
+                            color = C.textSecondary,
+                            fontSize = 11.sp,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text("去开启", color = C.accent, fontSize = 11.sp)
+                    }
+                }
+                Spacer(Modifier.height(14.dp))
+                val rows = QuickTiles.ALL.chunked(4)
+                rows.forEachIndexed { index, rowSpecs ->
+                    if (index > 0) Spacer(Modifier.height(10.dp))
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        rowSpecs.forEach { spec ->
+                            val added = spec.id in addedIds
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .clickable { QuickTiles.requestAdd(context, spec) { tileTick++ } }
+                                    .padding(vertical = 6.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(44.dp)
+                                            .background(
+                                                if (added) C.iconBgActive else C.chipBg,
+                                                CircleShape,
+                                            ),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        Icon(
+                                            painter = painterResource(spec.iconRes),
+                                            contentDescription = spec.title,
+                                            tint = if (added) C.accent else C.textSecondary,
+                                            modifier = Modifier.size(22.dp),
+                                        )
+                                    }
+                                    if (added) {
+                                        Icon(
+                                            Icons.Filled.CheckCircle,
+                                            null,
+                                            tint = C.accent,
+                                            modifier = Modifier
+                                                .size(14.dp)
+                                                .align(Alignment.TopEnd),
+                                        )
+                                    }
+                                }
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    spec.title,
+                                    color = if (added) C.accent else C.textSecondary,
+                                    fontSize = 11.sp,
+                                    maxLines = 1,
+                                )
+                            }
+                        }
+                        repeat(4 - rowSpecs.size) { Spacer(Modifier.weight(1f)) }
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(18.dp))
+
+        // ---- 4. 数据与备份：功能开关 + 两套数据的出口 ----
+        // 拆成两张卡：上面这张只管「零记开不开、说话识别」，
+        // 下面那张集中放零记与行程的备份 / 找回，用户丢了数据时只需要记一个地方。
+        SettingsSection(title = "数据与备份", desc = "零记 · 语音 · 本地备份") {
+            SettingsCard("零记") {
+                SwitchRow(
+                    label = "启用零记",
+                    // 一行放得下：详细后果写在下面那段，这里只列功能名，别把开关右侧挤没
+                    desc = "用车目标、记账、打卡、保养与保险提醒",
+                    checked = journalOn,
+                    onCheckedChange = {
+                        runtime.setJournalEnabled(it)
+                        message = if (it) "零记已重新开启" else "零记已关闭，数据仍保留在这台手机上"
+                    },
+                )
+                Spacer(Modifier.height(10.dp))
+                // 手工断行：中文在 Compose 里可以直接断在「，」前面，自动折行会得到一行
+                // 以标点开头的文字，很难看。这里按语义断成两句，窄屏上各自再折也没关系。
+                Text(
+                    if (journalOn) {
+                        "关掉后，底部「零记」和首页的保险、保养卡都会收起。\n" +
+                            "想用时回到这里打开即可，记过的内容不会丢。"
+                    } else {
+                        "已关闭。底部只剩「零控」和「我的」。\n" +
+                            "账单、打卡和目标都还在本机，打开开关就能继续。"
+                    },
+                    color = C.textSecondary,
+                    fontSize = 11.sp,
+                    lineHeight = 16.sp,
+                )
+                // 语音识别只服务于零记的灵感球；零记关掉之后这一项只剩个空配置页
+                if (journalOn) {
+                    Spacer(Modifier.height(10.dp))
+                    ClickRow(
+                        title = "语音识别（百度）",
+                        desc = if (runtime.hasCustomBaiduAsr()) {
+                            "已使用你填的 Key，长按灵感球可直接说话"
+                        } else {
+                            "已内置可用，长按灵感球直接说话；也可以填自己的 Key"
+                        },
+                        iconRes = R.drawable.ic_mic,
+                    ) { showAsrKey = true }
+                }
+            }
+
+            Spacer(Modifier.height(10.dp))
+
+            SettingsCard("备份与找回") {
+                // 两套数据各自独立备份（零记 journal_*.json / 行程 trips.json），
+                // 但出口是同一套逻辑、同一个目录，所以摆在一张卡里，用小标题分开。
+                Text(
+                    "零记",
+                    color = C.textPrimary,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "账本、打卡、目标与提醒；只在本机，卸载重装就没了",
+                    color = C.textSecondary,
+                    fontSize = 11.sp,
+                    lineHeight = 16.sp,
+                )
+                Spacer(Modifier.height(12.dp))
+                // 备份入口不跟零记总开关走：关掉之后数据仍在本机，这时候更需要能导出去。
+                JournalBackupRows(runtime = runtime, onMessage = { message = it })
+                // 数据安全：自动备份 + 更新后数据不见了时的找回入口
+                JournalStorageWarningRow(runtime = runtime)
+                JournalSafetyRows(runtime = runtime, onMessage = { message = it })
+
+                Spacer(Modifier.height(16.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(0.6.dp)
+                        .background(C.border.copy(alpha = 0.45f)),
+                )
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    "行程轨迹",
+                    color = C.textPrimary,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "每段行程的坐标、里程与地址；含完整轨迹，备份文件别随手转发",
+                    color = C.textSecondary,
+                    fontSize = 11.sp,
+                    lineHeight = 16.sp,
+                )
+                Spacer(Modifier.height(12.dp))
+                TripBackupRows(runtime = runtime, onMessage = { message = it })
+            }
+        }
+
+        Spacer(Modifier.height(18.dp))
+
+        // ---- 5. 地图与目的地：首页那张合并卡，以及「地址与搜索」需要的高德 Web Key ----
+        SettingsSection(title = "地图与目的地", desc = "高德 Key · 搜地点 · 驻车拍照") {
+            SettingsCard {
+                // 说明压到两句：这里三项都是「要用 Key」或「和地图有关」的，
+                // 长段落会把真正要点的那两行推到屏幕外。
+                Text(
+                    "地图底图直连高德公开瓦片，不需要 Key，有坐标就能画出来。\n" +
+                        "需要 Key 的是两件事：把坐标翻译成中文地址、按关键字搜目的地（用你自己的 Key，免费额度够日常用）。",
+                    color = C.textSecondary,
+                    fontSize = 11.sp,
+                    lineHeight = 16.sp,
+                )
+                Spacer(Modifier.height(10.dp))
+                ClickRow(
+                    title = "高德 Web Key",
+                    desc = if (runtime.hasAmapKey()) "已配置，可直接搜索目的地" else "未配置，地址只显示经纬度",
+                    iconRes = R.drawable.ic_key,
+                ) { showAmapKey = true }
+                Spacer(Modifier.height(10.dp))
+                ClickRow(
+                    title = "搜一个地方",
+                    desc = "不用回首页，直接在这里搜地点并发送到车机",
+                    iconRes = R.drawable.ic_nav_map,
+                ) { showDestination = true }
+                Spacer(Modifier.height(10.dp))
+                // 驻车拍照：两种来源二选一。默认手机拍照（任何车型都能用），
+                // 车端照片要看车型是否支持 —— 说明里必须点到这一层，不能只写「更清晰」
+                ClickRow(
+                    title = "驻车拍照方案",
+                    desc = when (photoSource) {
+                        ParkingPhotoSource.PHONE -> "手机拍照 · 任何车型可用（默认）"
+                        ParkingPhotoSource.OFFICIAL -> "车端照片 · 车辆自动上传，部分车型支持"
+                    },
+                    icon = Icons.Filled.PhotoCamera,
+                ) { showPhotoSource = true }
+            }
+        }
+
+        Spacer(Modifier.height(18.dp))
+
+        // ---- 6. 高级：进阶功能与排查选项，默认折叠 ----
+        // 折叠状态刻意只用 remember、不落盘 —— 每次进设置都回到收起状态。
+        val batteryKwhNow = remember(batteryKwhSaved) { runtime.batteryKwh() }
+        CollapsibleSettingsCard(
+            title = "高级设置",
+            desc = "电池容量 · 帧率 · 性能日志，点开查看",
+        ) {
+            ClickRow(
+                title = "电池容量",
+                desc = if (batteryKwhNow == null) {
+                    "未填写：行程只显示耗电百分比。填了才换算成度数（如 78.5 kWh）"
+                } else {
+                    "已填 ${batteryKwhNow} kWh · 行程能耗按电量差换算成度数"
+                },
+                icon = Icons.Default.Settings,
+                onClick = { showBatteryKwh = true },
+            )
+            Spacer(Modifier.height(10.dp))
+            SwitchRow(
+                label = "显示实时帧率",
+                desc = "右上角小药丸显示当前帧率与屏幕刷新率，用来确认是否跑满屏幕的高刷",
+                checked = frameStatsOn,
+                onCheckedChange = { runtime.setFrameStatsVisible(it) },
+            )
+            Spacer(Modifier.height(10.dp))
+            SwitchRow(
+                label = "记录滑动性能日志",
+                desc = "开启后每次首页上下滑动都会落一份逐帧日志（帧间隔/掉帧/主线程/GPU耗时），用于定位掉帧",
+                checked = perfLogOn,
+                onCheckedChange = { runtime.setPerfLogEnabled(it) },
+            )
+            if (perfLogOn) {
+                val logCount = PerfLogger.listLogs().size
+                ClickRow(
+                    title = "导出性能日志",
+                    desc = if (logCount == 0) "暂无日志，先回首页滑动几下再回来导出" else "已采集 $logCount 份，点此分享最近一份",
+                    icon = Icons.Default.Share,
+                    onClick = {
+                        val latest = PerfLogger.listLogs().firstOrNull()
+                        if (latest != null && PerfLogger.share(context, latest)) {
+                            message = "已拉起分享面板"
+                        } else {
+                            message = "暂无日志或分享失败"
+                        }
+                    },
+                )
+            }
+        }
+
+        message?.let {
+            Spacer(Modifier.height(14.dp))
+            Text(it, color = C.textSecondary, fontSize = 12.sp)
+        }
+        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.navigationBarsPadding())
+    }
+
+    // ---- 自定义车名 ----
+    if (showRename) {
+        var nameInput by remember { mutableStateOf(runtime.customName()) }
+        AlertDialog(
+            onDismissRequest = { showRename = false },
+            containerColor = C.panelBg,
+            title = { Text("自定义车名", color = C.textPrimary) },
+            text = {
+                Column {
+                    Text(
+                        "车名只保存在本机；留空则恢复为零跑官方 App 的昵称。",
+                        color = C.textSecondary,
+                        fontSize = 11.sp,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = nameInput,
+                        onValueChange = { nameInput = it.take(12) },
+                        placeholder = { Text("如：小7", color = C.textSecondary) },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = C.textPrimary,
+                            unfocusedTextColor = C.textPrimary,
+                            cursorColor = C.accent,
+                            focusedBorderColor = C.accent,
+                            unfocusedBorderColor = C.border,
+                        ),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    runtime.setCustomName(nameInput)
+                    showRename = false
+                }) { Text("保存", color = C.accent) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRename = false }) { Text("取消", color = C.textSecondary) }
+            },
+        )
+    }
+
+    // ---- 发送到车机（设置里也能直接搜，不必回首页翻卡片） ----
+    if (showDestination) {
+        DestinationSearchSheet(
+            runtime = runtime,
+            onDismiss = { showDestination = false },
+            onMessage = { message = it },
+        )
+    }
+
+    // ---- 高德 Web Key ----
+    if (showAmapKey) {
+        AmapKeyDialog(runtime = runtime, onDismiss = { showAmapKey = false })
+    }
+
+    // ---- 电池容量（行程能耗换算用）----
+    // 对话框抽到 BatteryKwhDialog：行程轨迹页也要能填，两处共用一份，不按车型猜。
+    if (showBatteryKwh) {
+        BatteryKwhDialog(
+            current = runtime.batteryKwh(),
+            onSave = {
+                runtime.setBatteryKwh(it)
+                batteryKwhSaved++
+            },
+            onDismiss = { showBatteryKwh = false },
+        )
+    }
+
+    // ---- 动力类型（增程 / 纯电） ----
+    // 只在「自动」和两种手动之间切换，不做别的花样：
+    // 纯电车若被认成增程，首屏会多出一行「油 0%」，主续航还会去取综合续航 → 显示「--」。
+    // ---- 回到顶部按钮：只回顶 / 回顶 + 刷新 ----
+    if (showBackToTopMode) {
+        AlertDialog(
+            onDismissRequest = { showBackToTopMode = false },
+            containerColor = C.panelBg,
+            title = { Text("回到顶部按钮", color = C.textPrimary) },
+            text = {
+                Column {
+                    Text(
+                        "首页下拉过一屏后，底部导航第一格会变成回到顶部按钮。" +
+                            "这里只决定点它时要不要顺便刷新车况，滚动本身不变。",
+                        color = C.textSecondary,
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    SettingOptionRow(
+                        label = "只回到顶部",
+                        desc = "默认。只滚到首页顶部，不拉车况、不耗车电",
+                        selected = !backToTopWithRefresh,
+                    ) {
+                        runtime.setBackToTopWithRefresh(false)
+                        showBackToTopMode = false
+                        message = "回顶按钮已设为只回到顶部"
+                    }
+                    SettingOptionRow(
+                        label = "回到顶部 + 刷新",
+                        desc = "回顶的同时重新拉取车况与能耗",
+                        selected = backToTopWithRefresh,
+                    ) {
+                        runtime.setBackToTopWithRefresh(true)
+                        showBackToTopMode = false
+                        message = "回顶按钮已设为回顶并刷新"
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showBackToTopMode = false }) {
+                    Text("关闭", color = C.textSecondary)
+                }
+            },
+        )
+    }
+
+    if (showPowerType) {
+        AlertDialog(
+            onDismissRequest = { showPowerType = false },
+            containerColor = C.panelBg,
+            title = { Text("动力类型", color = C.textPrimary) },
+            text = {
+                Column {
+                    Text(
+                        "决定首屏显示「电量」还是「电量 + 燃油」两行，" +
+                            "车端信号不全时自动判断可能失手，判断错了在这里手动指定。",
+                        color = C.textSecondary,
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    SettingOptionRow(
+                        label = "自动识别",
+                        desc = "有燃油信号才算增程，其余按纯电",
+                        selected = powerOverride == null,
+                    ) {
+                        runtime.setPowerTypeOverride(null)
+                        showPowerType = false
+                        message = "已改回自动识别动力类型"
+                    }
+                    SettingOptionRow(
+                        label = "纯电",
+                        desc = "只显示电量一行，续航取纯电",
+                        selected = powerOverride == SessionStore.VehiclePowerType.PURE_ELECTRIC,
+                    ) {
+                        runtime.setPowerTypeOverride(SessionStore.VehiclePowerType.PURE_ELECTRIC)
+                        showPowerType = false
+                        message = "已设为纯电"
+                    }
+                    SettingOptionRow(
+                        label = "增程",
+                        desc = "显示电量与燃油两行，取综合续航",
+                        selected = powerOverride == SessionStore.VehiclePowerType.RANGE_EXTENDER,
+                    ) {
+                        runtime.setPowerTypeOverride(SessionStore.VehiclePowerType.RANGE_EXTENDER)
+                        showPowerType = false
+                        message = "已设为增程"
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showPowerType = false }) { Text("关闭", color = C.textSecondary) }
+            },
+        )
+    }
+
+    // ---- 驻车拍照方案 ----
+    // 两种来源只能选一种：手机拍的是用户自己的记录，车端是车辆自动上传的俯视图。
+    // 这里把「部分车型不支持」写在选项里，而不是等用户选了以后才发现取不到。
+    if (showPhotoSource) {
+        AlertDialog(
+            onDismissRequest = { showPhotoSource = false },
+            containerColor = C.panelBg,
+            title = { Text("驻车拍照方案", color = C.textPrimary) },
+            text = {
+                Column {
+                    Text(
+                        "决定首页「驻车拍照」和找车页里那张照片从哪儿来，两种只能选一种。",
+                        color = C.textSecondary,
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    ParkingPhotoSource.entries.forEachIndexed { index, option ->
+                        if (index > 0) Spacer(Modifier.height(2.dp))
+                        SettingOptionRow(
+                            label = ParkingPhotoSourceRules.label(option),
+                            desc = ParkingPhotoSourceRules.description(option),
+                            selected = photoSource == option,
+                        ) {
+                            runtime.setParkingPhotoSource(option)
+                            showPhotoSource = false
+                            message = when (option) {
+                                ParkingPhotoSource.PHONE -> "已改用手机拍照"
+                                ParkingPhotoSource.OFFICIAL ->
+                                    "已改用车辆驻车照片，取不到时可在拍照页切回手机"
+                            }
+                            if (option == ParkingPhotoSource.OFFICIAL) {
+                                // 用户刚切过来，别让他自己再找一次「重新获取」：
+                                // 这里主动取一次，失败也会在拍照页写清原因
+                                scope.launch { runtime.refreshOfficialPhoto(force = true) }
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    // 这句话是这项功能最要紧的一句：车端照片不是全系都有
+                    Text(
+                        ParkingPhotoSourceRules.SUPPORT_NOTE,
+                        color = C.textSecondary,
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showPhotoSource = false }) {
+                    Text("关闭", color = C.textSecondary)
+                }
+            },
+        )
+    }
+
+    // ---- 语音识别（百度短语音） ----
+    if (showAsrKey) {
+        val current = runtime.baiduAsrKeys()
+        var apiInput by remember { mutableStateOf(current.first) }
+        var secretInput by remember { mutableStateOf(current.second) }
+        var checking by remember { mutableStateOf(false) }
+        var failure by remember { mutableStateOf<String?>(null) }
+        AlertDialog(
+            onDismissRequest = { if (!checking) showAsrKey = false },
+            containerColor = C.panelBg,
+            title = { Text("百度语音识别", color = C.textPrimary) },
+            text = {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    Text(
+                        // 每行控制在 22 个汉字以内（弹层正文宽约 272dp，12sp 放得下 22 个），
+                        // 否则会被系统折成四行、把上面的教程挤下去
+                        "开箱可用：已内置百度语音凭据，不填也能说话。\n" +
+                            "想用自己的额度，就按下面 4 步申请后填进来。",
+                        color = C.textSecondary,
+                        fontSize = 12.sp,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    BaiduKeyGuide(onOpenConsole = { runtime.openExternal(BaiduAsrConsoleUrl) })
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = apiInput,
+                        onValueChange = { apiInput = it.trim() },
+                        singleLine = true,
+                        placeholder = { Text("API Key", color = C.textSecondary, fontSize = 13.sp) },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = C.textPrimary,
+                            unfocusedTextColor = C.textPrimary,
+                            cursorColor = C.accent,
+                            focusedBorderColor = C.accent,
+                            unfocusedBorderColor = C.border,
+                        ),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = secretInput,
+                        onValueChange = { secretInput = it.trim() },
+                        singleLine = true,
+                        placeholder = { Text("Secret Key", color = C.textSecondary, fontSize = 13.sp) },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = C.textPrimary,
+                            unfocusedTextColor = C.textPrimary,
+                            cursorColor = C.accent,
+                            focusedBorderColor = C.accent,
+                            unfocusedBorderColor = C.border,
+                        ),
+                    )
+                    failure?.let {
+                        Spacer(Modifier.height(10.dp))
+                        Text(it, color = Color(0xFFD9534F), fontSize = 12.sp)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (checking) return@TextButton
+                    checking = true
+                    failure = null
+                    scope.launch {
+                        val problem = BaiduAsr.checkCredentials(apiInput, secretInput)
+                        checking = false
+                        if (problem == null) {
+                            runtime.setBaiduAsrKeys(apiInput, secretInput)
+                            BaiduAsr.forgetToken()
+                            message = "百度语音已配置，长按灵感球可以直接说话"
+                            showAsrKey = false
+                        } else {
+                            failure = problem
+                        }
+                    }
+                }) { Text(if (checking) "校验中…" else "保存并校验", color = C.accent) }
+            },
+            dismissButton = {
+                TextButton(onClick = { if (!checking) showAsrKey = false }) {
+                    Text("取消", color = C.textSecondary)
+                }
+            },
+        )
+    }
+
+    // ---- 蓝牙钥匙开启提示 ----
+    // 设置页这个开关和详情页里那个是同一个状态，所以两边都要过同一道提示；
+    // 这里确认后就地调用即可，notice 顺手带回下面那行消息。
+    if (showBlePrompt) {
+        val ble = LocalBleKeyHost.current
+        BleEnablePromptDialog(
+            onConfirm = {
+                showBlePrompt = false
+                ble?.let {
+                    it.toggleEnabled(true)
+                    message = it.notice
+                }
+            },
+            onDismiss = { showBlePrompt = false },
+        )
+    }
+
+    // ---- 控车密码 ----
+    if (showPin) {
+        var pin by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showPin = false },
+            containerColor = C.panelBg,
+            title = { Text("控车密码", color = C.textPrimary) },
+            text = {
+                Column {
+                    Text(
+                        "输入零跑官方 App 中设置的 4 位操控密码",
+                        color = C.textSecondary,
+                        fontSize = 13.sp,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = pin,
+                        onValueChange = { pin = it.filter(Char::isDigit).take(4) },
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                            keyboardType = KeyboardType.NumberPassword,
+                        ),
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = C.textPrimary,
+                            unfocusedTextColor = C.textPrimary,
+                            cursorColor = C.accent,
+                            focusedBorderColor = C.accent,
+                            unfocusedBorderColor = C.border,
+                        ),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = pin.length == 4,
+                    onClick = {
+                        scope.launch {
+                            val ok = runCatching { runtime.verifyAndSavePin(pin) }.getOrDefault(false)
+                            message = if (ok) "控车密码已保存" else "密码校验失败"
+                            showPin = false
+                            // 桌面小组件在「没设密码」时把五颗按键换成了「去设置」，
+                            // 设完之后必须马上重画一次，否则回到桌面点按键还是只会打开 App
+                            if (ok) runCatching { VehicleWidget.render(context) }
+                        }
+                    },
+                ) {
+                    Text(
+                        "确认",
+                        color = if (pin.length == 4) C.accent else C.textSecondary,
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPin = false }) { Text("取消", color = C.textSecondary) }
+            },
+        )
+    }
+}
+
+// ============================================================================
+// 设置类页面共用组件（设置 / 个性化 / 关于）
+// ============================================================================
+
+/** 设置页顶栏：返回按钮 + 标题（标题与图标统一主色）。 */
+@Composable
+fun SettingsTopBar(
+    title: String,
+    onBack: () -> Unit,
+) {
+    val C = LocalAppColors.current
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = onBack) {
+            Icon(
+                Icons.AutoMirrored.Filled.ArrowBack,
+                contentDescription = "返回",
+                tint = C.textPrimary,
+                modifier = Modifier.size(22.dp),
+            )
+        }
+        Text(title, color = C.textPrimary, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+/** 带开关的设置行。 */
+@Composable
+fun SwitchRow(
+    label: String,
+    desc: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    val C = LocalAppColors.current
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(label, color = C.textPrimary, fontSize = 14.sp)
+            Spacer(Modifier.height(2.dp))
+            Text(desc, color = C.textSecondary, fontSize = 11.sp)
+        }
+        Spacer(Modifier.width(12.dp))
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color.White,
+                checkedTrackColor = C.accent,
+                uncheckedThumbColor = Color.White,
+                uncheckedTrackColor = C.barTrack,
+            ),
+        )
+    }
+}
+
+/**
+ * 「快速切换壁纸或背景」的三选一：一行三块卡片。
+ *
+ * 和「个性化 → 外观模式」用同一套视觉（选中 = 主题色淡底 + 1.5dp 描边 + 图标文字变色），
+ * 因为两者都是"三选一、只影响观感"的设置，用户不用重新学一遍。
+ * 说明文字不塞进卡片里（四五个字塞不下），统一放在下面一行，跟着选择变。
+ */
+@Composable
+internal fun QuickSwitchCards(
+    mode: QuickSwitchMode,
+    onPick: (QuickSwitchMode) -> Unit,
+) {
+    val C = LocalAppColors.current
+    val items = listOf(
+        QuickSwitchMode.DOT to Icons.Filled.FiberManualRecord,
+        QuickSwitchMode.TAP to Icons.Filled.TouchApp,
+        QuickSwitchMode.OFF to Icons.Filled.VisibilityOff,
+    )
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        items.forEach { (m, icon) ->
+            val selected = m == mode
+            val shape = RoundedCornerShape(12.dp)
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(58.dp)
+                    .clip(shape)
+                    .background(
+                        if (selected) C.accent.copy(alpha = 0.12f) else C.iconBg,
+                        shape,
+                    )
+                    .border(
+                        if (selected) 1.5.dp else 0.dp,
+                        if (selected) C.accent else Color.Transparent,
+                        shape,
+                    )
+                    .clickable { onPick(m) },
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Icon(
+                    icon,
+                    contentDescription = null,
+                    tint = if (selected) C.accent else C.textSecondary,
+                    modifier = Modifier.size(17.dp),
+                )
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    text = m.label,
+                    color = if (selected) C.accent else C.textPrimary,
+                    fontSize = 11.5.sp,
+                    maxLines = 1,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                )
+            }
+        }
+    }
+}
+
+/** 当前模式的触发方式说明：点之前就讲清楚，别让人试了才知道点哪儿。 */
+internal fun quickSwitchHint(mode: QuickSwitchMode): String = mode.desc
+
+/** 设置弹层里的单选项（动力类型、更新频率共用）：选中项铺一层 chip 底色 + 右侧对勾。 */
+@Composable
+internal fun SettingOptionRow(
+    label: String,
+    desc: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val C = LocalAppColors.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (selected) C.chipBg else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                label,
+                color = if (selected) C.accent else C.textPrimary,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(desc, color = C.textSecondary, fontSize = 11.sp, lineHeight = 15.sp)
+        }
+        Spacer(Modifier.width(8.dp))
+        if (selected) {
+            Icon(
+                Icons.Filled.CheckCircle,
+                contentDescription = null,
+                tint = C.accent,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+    }
+}
+
+/** 可点击的设置行：左图标（可选）+ 标题 + 说明，右箭头；[showDot] 为真时标题右侧显示红点。 */
+@Composable
+fun ClickRow(
+    title: String,
+    desc: String,
+    iconRes: Int? = null,
+    icon: ImageVector? = null,
+    showDot: Boolean = false,
+    onClick: () -> Unit,
+) {
+    val C = LocalAppColors.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // 两种图标来源：老页面传 drawable 资源，新页面直接用 Material 矢量图（不用再补 XML）
+        if (icon != null) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = C.textPrimary,
+                modifier = Modifier.size(22.dp),
+            )
+            Spacer(Modifier.width(12.dp))
+        } else if (iconRes != null) {
+            Icon(
+                painter = painterResource(iconRes),
+                contentDescription = null,
+                tint = C.textPrimary,
+                modifier = Modifier.size(22.dp),
+            )
+            Spacer(Modifier.width(12.dp))
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            if (showDot) {
+                // 红点紧跟标题，提示有更新待处理
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(title, color = C.textPrimary, fontSize = 14.sp)
+                    Spacer(Modifier.width(7.dp))
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .background(Color(0xFFFF3B30), CircleShape),
+                    )
+                }
+                Spacer(Modifier.height(2.dp))
+            } else {
+                Text(title, color = C.textPrimary, fontSize = 14.sp)
+                Spacer(Modifier.height(2.dp))
+            }
+            Text(desc, color = C.textSecondary, fontSize = 11.sp, lineHeight = 15.sp)
+        }
+        Spacer(Modifier.width(10.dp))
+        Icon(
+            Icons.Filled.ChevronRight,
+            contentDescription = null,
+            tint = C.textSecondary,
+            modifier = Modifier.size(18.dp),
+        )
+    }
+}
+
+/** 设置卡片：带 title 时在顶部显示小标题，不带则直接放内容。实心面板 + 细描边，干净不透光。 */
+@Composable
+fun SettingsCard(
+    title: String? = null,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val C = LocalAppColors.current
+    val shape = RoundedCornerShape(20.dp)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(C.panelBg, shape)
+            .padding(16.dp),
+    ) {
+        if (title != null) {
+            Text(title, color = C.textPrimary, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+            Spacer(Modifier.height(10.dp))
+        }
+        content()
+    }
+}
+
+/**
+ * 可折叠设置卡片：标题行常驻，内容默认收起，点标题才展开。
+ *
+ * 用于「高级设置」这类不该默认摊在明面上的分组。折叠状态刻意只用 `remember`、
+ * 不落盘 —— 每次重新进设置页都回到收起状态，避免上次忘了收回、下次一进设置
+ * 就把隐藏项晾在屏幕上。
+ */
+@Composable
+fun CollapsibleSettingsCard(
+    title: String,
+    desc: String? = null,
+    initiallyExpanded: Boolean = false,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val C = LocalAppColors.current
+    val shape = RoundedCornerShape(20.dp)
+    var expanded by remember { mutableStateOf(initiallyExpanded) }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(C.panelBg, shape)
+            .padding(16.dp),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .clickable { expanded = !expanded },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(title, color = C.textPrimary, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                if (desc != null) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(desc, color = C.textSecondary, fontSize = 11.sp)
+                }
+            }
+            Icon(
+                Icons.Filled.ChevronRight,
+                contentDescription = if (expanded) "收起" else "展开",
+                tint = C.textSecondary,
+                modifier = Modifier
+                    .size(18.dp)
+                    .rotate(if (expanded) 90f else 0f),
+            )
+        }
+        AnimatedVisibility(visible = expanded) {
+            Column {
+                Spacer(Modifier.height(12.dp))
+                content()
+            }
+        }
+    }
+}
+
+/** 分组标题：把设置项按类隔开。 */
+@Composable
+fun SettingsSection(
+    title: String,
+    desc: String,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val C = LocalAppColors.current
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(title, color = C.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.width(8.dp))
+            Text(desc, color = C.textSecondary, fontSize = 11.sp)
+        }
+        Spacer(Modifier.height(8.dp))
+        content()
+    }
+}
+
+/** 单选选项行（外观模式等）。 */
+@Composable
+fun OptionRow(
+    label: String,
+    desc: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val C = LocalAppColors.current
+    val shape = RoundedCornerShape(14.dp)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .border(1.5.dp, if (selected) C.accent else Color.Transparent, shape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            if (selected) Icons.Filled.CheckCircle else Icons.Filled.RadioButtonUnchecked,
+            contentDescription = null,
+            tint = if (selected) C.accent else C.textSecondary,
+            modifier = Modifier.size(20.dp),
+        )
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(label, color = C.textPrimary, fontSize = 14.sp)
+            Spacer(Modifier.height(2.dp))
+            Text(desc, color = C.textSecondary, fontSize = 11.sp, lineHeight = 15.sp)
+        }
+    }
+}
+
+/** 百度智能云「语音技术」控制台（短语音识别就在这里创建应用、拿 Key）。 */
+const val BaiduAsrConsoleUrl = "https://console.bce.baidu.com/ai/#/ai/speech/overview/index"
+
+/**
+ * 给用户照着敲的网址：在域名后**手工断行**。
+ * 弹层里正文只有 ~248dp 宽，整条 305dp 的 URL 会被系统随意折断（常常断在 "inde/x" 这种地方），
+ * 主动分成「域名 + 路径」两行更像是有意排版，也不会多占高度。
+ */
+private const val BaiduAsrConsoleUrlText =
+    "console.bce.baidu.com\n/ai/#/ai/speech/overview/index"
+
+/** 申请教程的四步文案：写给不熟悉百度智能云的人看，照着走一遍就能拿到 Key。 */
+private val BaiduKeySteps = listOf(
+    "打开控制台，用百度账号登录并完成实名认证 —— 免费额度要认证之后才发放。",
+    "左侧「应用列表」→「创建应用」，接口勾「短语音识别」，应用名随便写。",
+    "创建后回到应用列表，复制这个应用的 API Key 与 Secret Key。",
+    "粘到下面两个输入框，点「保存并校验」；通过后就长期用你的额度。",
+)
+
+/**
+ * 申请教程通用卡片：标题 + 「打开控制台 ›」+ 编号步骤 + 可选「申请之后能干嘛」+ 可点的网址。
+ *
+ * 弹层里的文字不能复制，所以网址**原样印出来**（能照着敲），
+ * 上面再放一个「打开控制台」直接跳浏览器，省得在手机上手动输入长链接。
+ */
+@Composable
+private fun KeyGuideCard(
+    title: String,
+    steps: List<String>,
+    urlText: String,
+    onOpenConsole: () -> Unit,
+    benefitTitle: String = "",
+    benefits: List<String> = emptyList(),
+    /** 末尾一句「卡住了怎么办」，没有就不占位。 */
+    note: String? = null,
+) {
+    val C = LocalAppColors.current
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(C.chipBg)
+            .border(1.dp, C.border, RoundedCornerShape(12.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                title,
+                color = C.textPrimary,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                "打开控制台 ›",
+                color = C.accent,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable(onClick = onOpenConsole)
+                    .padding(horizontal = 6.dp, vertical = 3.dp),
+            )
+        }
+        Spacer(Modifier.height(7.dp))
+        steps.forEachIndexed { index, step ->
+            Row(modifier = Modifier.padding(bottom = 4.dp)) {
+                Text(
+                    "${index + 1}",
+                    color = C.accent,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.width(14.dp),
+                )
+                Text(
+                    step,
+                    color = C.textSecondary,
+                    fontSize = 11.sp,
+                    lineHeight = 16.sp,
+                )
+            }
+        }
+        if (benefits.isNotEmpty()) {
+            Spacer(Modifier.height(2.dp))
+            Text(
+                benefitTitle,
+                color = C.textPrimary,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium,
+            )
+            Spacer(Modifier.height(3.dp))
+            benefits.forEach { item ->
+                Row(modifier = Modifier.padding(bottom = 3.dp)) {
+                    Text(
+                        "·",
+                        color = C.accent,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.width(14.dp),
+                    )
+                    Text(
+                        item,
+                        color = C.textSecondary,
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp,
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(5.dp))
+        // 网址做成一颗可点的浅色胶囊，而不是一行灰字 ——
+        // 灰字看不出能点，用户还是得照着敲；这里长相必须像按钮。
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = urlText,
+                color = C.accent,
+                fontSize = 10.5.sp,
+                lineHeight = 14.sp,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(7.dp))
+                    .background(C.accent.copy(alpha = 0.10f))
+                    .clickable(onClick = onOpenConsole)
+                    .padding(horizontal = 7.dp, vertical = 4.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(text = "点击打开", color = C.textSecondary, fontSize = 10.sp)
+        }
+        if (note != null) {
+            Spacer(Modifier.height(7.dp))
+            Text(
+                text = note,
+                color = C.textSecondary.copy(alpha = 0.9f),
+                fontSize = 10.5.sp,
+                lineHeight = 15.sp,
+            )
+        }
+    }
+}
+
+/** 百度语音 Key 的申请教程。 */
+@Composable
+fun BaiduKeyGuide(onOpenConsole: () -> Unit) {
+    KeyGuideCard(
+        title = "申请教程（约 2 分钟）",
+        steps = BaiduKeySteps,
+        urlText = BaiduAsrConsoleUrlText,
+        onOpenConsole = onOpenConsole,
+    )
+}
+
+/** 高德开放平台「应用管理 → 我的应用」：Key 就在这里创建与查看。 */
+const val AmapConsoleUrl = "https://console.amap.com/dev/key/app"
+
+/** 照着敲的网址：同样手工断成「域名 + 路径」两行。 */
+private const val AmapConsoleUrlText = "console.amap.com\n/dev/key/app"
+
+/**
+ * 申请高德 Web Key 的四步。
+ *
+ * 第 1 步先说「用电脑」：控制台在手机上能打开，但注册、实名认证要填一长串资料，
+ * 在手机浏览器里来回缩放很容易中途放弃。所以教程的第一句就是把人往电脑上引。
+ *
+ * 第 3 步必须点明「Web 服务」：平台默认给的选项里 Android 平台最常见，
+ * 但那个要绑包名和 SHA1，填进零控只会报 `INVALID_USER_DOMAIN` / 无权限，是最容易踩的坑。
+ */
+private val AmapKeySteps = listOf(
+    "建议用电脑打开（手机也能开，但注册要填资料，电脑上顺手得多）。手机号或支付宝登录，" +
+        "顺手把个人实名认证做完 —— 免费额度要认证之后才发放。",
+    "左侧「应用管理 → 我的应用 → 创建新应用」。名字随便写，类型选「出行」就行。",
+    "进这个应用，点「添加 Key」。服务平台**必须选「Web 服务」**：" +
+        "选「Android」要绑包名和签名指纹，填进零控一定用不了。",
+    "提交后会得到一串 32 位字符，那就是 Key。复制它，粘到下面的输入框里保存。",
+)
+
+/** 「配好之后能干嘛」：用户最关心的是这一步，顺手把账号同步的前提讲清楚。 */
+private val AmapKeyBenefits = listOf(
+    "找车页那张地图会配上中文地址 —— 车停在哪条街、哪个院，一眼就看到",
+    "地址下面两个按钮：一个带你去车那儿（步行 / 骑行 / 驾车随你选），一个把目的地交给车",
+    "发目的地时按关键字搜全国的地点、停车场、充电站，输入几个字就出结果",
+    "手机和车机登录同一个高德账号，选好目的地再上车，车机会自动提示继续导航",
+    "Web 服务每天都有免费额度，按日常搜索次数根本用不到上限，不需要花钱",
+)
+
+/** 教程末尾那句「卡住了怎么办」：把最常见的两个卡点直接摆出来。 */
+private const val AmapKeyNote =
+    "配好之后地址还是只显示经纬度？点找车页右上角刷新一次；还不行就检查 Key 是否选成了「Web 服务」类型。"
+
+/** 高德 Web Key 的申请教程（设置里与首页卡片弹层共用）。 */
+@Composable
+fun AmapKeyGuide(onOpenConsole: () -> Unit) {
+    KeyGuideCard(
+        title = "申请教程（约 3 分钟）",
+        steps = AmapKeySteps,
+        urlText = AmapConsoleUrlText,
+        onOpenConsole = onOpenConsole,
+        benefitTitle = "配好之后可以",
+        benefits = AmapKeyBenefits,
+        note = AmapKeyNote,
+    )
+}
+
+/**
+ * 高德 Web Key 的申请 / 填写弹层。
+ *
+ * 抽成公共组件是因为它有两个入口：设置里的那一行，以及**找车页右上角的「?」**。
+ * 后者出现在「地址只显示经纬度、搜不了目的地」的现场，用户正卡在这一步，
+ * 再让他退回设置找半天是没道理的。
+ *
+ * 地图底图不需要 Key（瓦片直连高德），所以这里讲的全是「地址与搜索」。
+ *
+ * 保存后不用手动触发刷新：[[com.leapcontrol.app.ui.rememberVehiclePlace]] 把
+ * `hasAmapKey()` 当成了加载 key，Key 一变它自己就会重拉地址。
+ */
+@Composable
+fun AmapKeyDialog(runtime: AppRuntime, onDismiss: () -> Unit) {
+    val C = LocalAppColors.current
+    val context = LocalContext.current
+    // 输入内容必须在弹层这一层持有：它同时在 text 与 confirmButton 两个 lambda 里用到，
+    // 声明在 text 里面的话「保存」按钮看不见它
+    var keyInput by remember { mutableStateOf(runtime.amapKey()) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = C.panelBg,
+        title = { Text("配置高德 Key", color = C.textPrimary) },
+        text = {
+            // 教程比输入框长得多，不给滚动时矮屏上「保存」会被顶出弹窗
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                Text(
+                    "地图底图不需要 Key：找车页、首页缩略图和行程轨迹都直连高德的公开瓦片，有坐标就画得出来。" +
+                        "这里要 Key 的是另外两件事 —— 把坐标翻译成中文地址（逆地理编码），" +
+                        "以及按关键字搜目的地。",
+                    color = C.textSecondary,
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Key 是一串 32 位字符，在高德开放平台免费申请，也是免费的 —— " +
+                        "填一次长期有效，填之前先看两分钟教程。",
+                    color = C.textSecondary,
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp,
+                )
+                Spacer(Modifier.height(10.dp))
+                AmapKeyGuide(onOpenConsole = { runtime.openExternal(AmapConsoleUrl) })
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = keyInput,
+                    onValueChange = { keyInput = it.trim() },
+                    singleLine = true,
+                    label = { Text("把 32 位 Key 粘在这里", color = C.textSecondary, fontSize = 12.sp) },
+                    placeholder = {
+                        Text("例如 a1b2c3d4e5f6…", color = C.textSecondary, fontSize = 13.sp)
+                    },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = C.textPrimary,
+                        unfocusedTextColor = C.textPrimary,
+                        cursorColor = C.accent,
+                        focusedBorderColor = C.accent,
+                        unfocusedBorderColor = C.border,
+                    ),
+                )
+                if (runtime.hasAmapKey()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "已经填过一把 Key。想换就整条覆盖后保存；清空再保存则恢复默认。",
+                        color = C.textSecondary,
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                runtime.setAmapKey(keyInput)
+                onDismiss()
+                Toast.makeText(
+                    context,
+                    if (keyInput.isBlank()) "已清空高德 Key，地址将改回经纬度" else "已保存，地址马上会刷新",
+                    Toast.LENGTH_SHORT,
+                ).show()
+            }) { Text("保存", color = C.accent) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消", color = C.textSecondary) }
+        },
+    )
+}
+
+/** 两列信息行：左标题、右内容（关于页用）。 */
+@Composable
+fun InfoRow(
+    label: String,
+    value: String,
+) {
+    val C = LocalAppColors.current
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, color = C.textPrimary, fontSize = 14.sp)
+        Spacer(Modifier.width(12.dp))
+        Text(
+            value,
+            color = C.textSecondary,
+            fontSize = 13.sp,
+            modifier = Modifier.weight(1f),
+            textAlign = TextAlign.End,
+        )
+    }
+}
+
+/** 一组编号条款（免责声明 / 开源协议 / 隐私条款共用）。 */
+@Composable
+fun ClauseList(items: List<String>) {
+    val C = LocalAppColors.current
+    Column(modifier = Modifier.fillMaxWidth()) {
+        items.forEachIndexed { index, text ->
+            if (index > 0) Spacer(Modifier.height(7.dp))
+            ClauseRow(index = index + 1, text = text)
+        }
+    }
+}
+
+/** 当前版本号（取自构建配置，避免与 build.gradle.kts 脱节）。 */
+fun appVersionText(): String = "v${BuildConfig.VERSION_NAME}（${BuildConfig.VERSION_CODE}）"
+
+/**
+ * 这个包是什么时候装上的（系统记录的 lastUpdateTime）。
+ *
+ * 版本号在开发期不涨（同一版反复覆盖安装），光看 v1.0.3 分不出手上是不是刚打出来的那个包。
+ * 安装时间能直接回答「我到底装上了没有」，比对着电脑看 APK 生成时间靠谱。
+ */
+fun installTimeText(context: Context): String = runCatching {
+    val info = context.packageManager.getPackageInfo(context.packageName, 0)
+    if (info.lastUpdateTime <= 0L) return@runCatching "未知"
+    java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.US)
+        .format(java.util.Date(info.lastUpdateTime))
+}.getOrDefault("未知")
+

@@ -1,0 +1,655 @@
+package com.leapcontrol.app
+
+import android.content.Context
+import com.leapcontrol.app.bluetooth.BleCredentialScope
+import com.leapcontrol.app.bluetooth.BleCertificateSync
+import com.leapcontrol.app.bluetooth.BleKeyCertificate
+import org.json.JSONArray
+import org.json.JSONObject
+
+/**
+ * 车型配置下拉选项，使用短车型名便于用户识别和维护。
+ *
+ * **只放宣传名**：Lafa5 的接口代号是 B05，两套写法同时列出来会变成两个选项
+ * （车主看到「B05」和「Lafa5」各一条，不知道选哪个）。代号进不了这个列表，
+ * 统一由 [VehicleModels.canonical] 归一。
+ */
+val SUPPORTED_VEHICLE_MODELS = listOf(
+    "C01", "B01", "T03", "C11", "C16", "D99", "D19", "A05",
+    "B10", "C10", "A10", "Lafa5"
+)
+
+/** 会话与操作密码的本地持久化（应用私有存储）。 */
+class SessionStore(context: Context) {
+
+    enum class VehiclePowerType { PURE_ELECTRIC, RANGE_EXTENDER }
+
+    /** 用户确认的车型配置，按 VIN 隔离保存；未设置车型时由调用方回填会话 cartype。 */
+    data class VehicleConfig(
+        val modelYear: String = "",
+        val powerType: VehiclePowerType? = null,
+        val model: String = "",
+        val color: String = "",
+        val nickname: String = ""
+    )
+
+    private val appContext = context.applicationContext
+    private val prefs = appContext.getSharedPreferences("leap_session", Context.MODE_PRIVATE)
+    private val appPrefs = appContext.getSharedPreferences("leap_app_preferences", Context.MODE_PRIVATE)
+    private val secureValues = SecureValueStore(context, prefs)
+
+    /**
+     * 仅读取当前车型代码，不触发 Keystore 解密与整会话反序列化。
+     * 供 3D 支持判定等高频只读路径使用。
+     */
+    fun loadSelectedCarType(): String = prefs.getString("carType", "") ?: ""
+
+    fun load(): Session = synchronized(SESSION_LOCK) {
+        val existingDeviceId = prefs.getString("deviceId", null)?.takeIf { it.isNotBlank() }
+        val deviceId = existingDeviceId ?: Crypto.randomDeviceId().also {
+            prefs.edit().putString("deviceId", it).apply()
+        }
+        val s = Session(
+            deviceId = deviceId,
+            generation = prefs.getLong(SESSION_GENERATION, 0L)
+        )
+        s.phone = secureValues.getString("phone") ?: ""
+        secureValues.getString("oldAuth")?.takeIf { it.isNotBlank() }?.let {
+            s.oldAuth = OldAuth.fromJson(JSONObject(it))
+        }
+        secureValues.getString("newAuth")?.takeIf { it.isNotBlank() }?.let {
+            s.newAuth = NewAuth.fromJson(JSONObject(it))
+        }
+        s.selectedVin = prefs.getString("vin", "") ?: ""
+        s.selectedCarType = prefs.getString("carType", "") ?: ""
+        s.selectedNickname = prefs.getString("nickname", "") ?: ""
+        s.selectedYear = prefs.getString("year", "") ?: ""
+        s.smDeviceId = prefs.getString("smDeviceId", "") ?: ""
+        prefs.getString("route", null)?.takeIf { it.isNotBlank() }?.let {
+            s.route = RouteData.fromJson(JSONObject(it))
+        }
+        prefs.getString("hvacCapability", null)?.takeIf { it.isNotBlank() }?.let {
+            s.hvacCapability = HvacCapability.fromJson(JSONObject(it))
+        }
+        s
+    }
+
+    /** Returns false when this session predates a logout and must not restore credentials. */
+    fun save(s: Session): Boolean = synchronized(SESSION_LOCK) {
+        val currentGen = prefs.getLong(SESSION_GENERATION, 0L)
+        if (s.oldAuth == null && s.generation != currentGen) return false
+        val editor = prefs.edit()
+            .putLong(SESSION_GENERATION, currentGen)
+            .putString("deviceId", s.deviceId)
+        secureValues.putString(editor, "phone", s.phone)
+        secureValues.putString(editor, "oldAuth", s.oldAuth?.toJson()?.toString() ?: "")
+        secureValues.putString(editor, "newAuth", s.newAuth?.toJson()?.toString() ?: "")
+        editor
+            .putString("vin", s.selectedVin)
+            .putString("carType", s.selectedCarType)
+            .putString("nickname", s.selectedNickname)
+            .putString("year", s.selectedYear)
+            .putString("smDeviceId", s.smDeviceId)
+            .putString("route", s.route?.toJson()?.toString() ?: "")
+            .putString("hvacCapability", s.hvacCapability.toJson().toString())
+            .commit()
+        true
+    }
+
+    fun clear() = synchronized(SESSION_LOCK) {
+        val nextGeneration = prefs.getLong(SESSION_GENERATION, 0L) + 1L
+        val savedDeviceId = prefs.getString("deviceId", null)
+        val editor = prefs.edit().clear().putLong(SESSION_GENERATION, nextGeneration)
+        if (!savedDeviceId.isNullOrBlank()) {
+            editor.putString("deviceId", savedDeviceId)
+        }
+        editor.commit()
+    }
+
+    fun saveVehicles(vehicles: List<Vehicle>) = synchronized(SESSION_LOCK) {
+        val array = JSONArray()
+        vehicles.forEach { array.put(it.toJson()) }
+        prefs.edit().putString("vehicles", array.toString()).apply()
+    }
+
+    fun loadVehicles(): List<Vehicle> = synchronized(SESSION_LOCK) {
+        val raw = prefs.getString("vehicles", null) ?: return emptyList()
+        return runCatching {
+            val array = JSONArray(raw)
+            (0 until array.length()).mapNotNull { i ->
+                array.optJSONObject(i)?.let { Vehicle.fromJson(it) }
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    fun loadBluetoothKeyCertificate(accountId: String, vin: String): BleKeyCertificate? = synchronized(SESSION_LOCK) {
+        if (accountId.isBlank() || vin.isBlank()) return null
+        val key = BleCredentialScope.storageKey(accountId, vin)
+        val raw = secureValues.getString(key) ?: return null
+        runCatching {
+            val json = JSONObject(raw)
+            if (json.optString("requestDeviceId") != prefs.getString("deviceId", "")) return null
+            BleKeyCertificate.fromJson(json, vin)
+        }.getOrElse {
+            prefs.edit().remove(key).apply()
+            null
+        }
+    }
+
+    fun completeBluetoothCertificateSync(
+        sync: BleCertificateSync,
+        refreshed: Session,
+        certificate: BleKeyCertificate
+    ): Boolean = synchronized(SESSION_LOCK) {
+        if (!sync.canCommit(load(), refreshed, certificate)) return false
+        // Commit refreshed credentials and their certificate together without overwriting device preferences.
+        val editor = prefs.edit().putString("deviceId", refreshed.deviceId)
+            .putString("route", refreshed.route?.toJson()?.toString() ?: "")
+        secureValues.putString(editor, "oldAuth", refreshed.oldAuth?.toJson()?.toString().orEmpty())
+        secureValues.putString(editor, "newAuth", refreshed.newAuth?.toJson()?.toString().orEmpty())
+        secureValues.putString(editor, BleCredentialScope.storageKey(sync.identity.accountId, sync.identity.vin),
+            certificate.toJson().put("requestDeviceId", refreshed.deviceId).toString())
+        editor.commit()
+    }
+
+    fun loadOpPassword(): String? = secureValues.getString("op_password")?.takeIf { it.matches(Regex("\\d{4}")) }
+
+    fun saveOpPassword(password: String) {
+        require(password.isBlank() || password.matches(Regex("\\d{4}"))) { "操作密码必须为 4 位数字" }
+        secureValues.putString(prefs.edit(), "op_password", password).commit()
+    }
+
+    /** 快捷空调默认温度（本地缓存偏好）。 */
+    fun loadAcTemp(): Int = prefs.getInt("ac_temp", 24)
+
+    fun saveAcTemp(temperature: Int) {
+        prefs.edit().putInt("ac_temp", temperature).apply()
+    }
+
+    /** 健康充电目标上限百分比（按 VIN 隔离存储，默认 80%）。 */
+    fun loadHealthyChargeLimit(vin: String): Int {
+        if (vin.isBlank()) return 80
+        val key = "healthy_charge_limit_$vin"
+        return prefs.getInt(key, 80)
+    }
+
+    fun saveHealthyChargeLimit(vin: String, soc: Int) {
+        if (vin.isBlank()) return
+        val key = "healthy_charge_limit_$vin"
+        prefs.edit().putInt(key, soc.coerceIn(50, 100)).apply()
+    }
+
+    /** 电池健康充电开关状态（按 VIN 隔离存储，默认开启）。 */
+    fun loadHealthyChargeEnabled(vin: String): Boolean {
+        if (vin.isBlank()) return true
+        val key = "healthy_charge_enabled_$vin"
+        return prefs.getBoolean(key, true)
+    }
+
+    fun saveHealthyChargeEnabled(vin: String, enabled: Boolean) {
+        if (vin.isBlank()) return
+        val key = "healthy_charge_enabled_$vin"
+        prefs.edit().putBoolean(key, enabled).apply()
+    }
+
+    // 预约充电设置（默认 23:00 开始，次日 07:00 结束）
+    fun loadScheduledChargeEnabled(vin: String): Boolean {
+        if (vin.isBlank()) return false
+        return prefs.getBoolean("scheduled_charge_enabled_$vin", false)
+    }
+
+    fun saveScheduledChargeEnabled(vin: String, enabled: Boolean) {
+        if (vin.isBlank()) return
+        prefs.edit().putBoolean("scheduled_charge_enabled_$vin", enabled).apply()
+    }
+
+    fun loadScheduledChargeStartTime(vin: String): String {
+        if (vin.isBlank()) return "23:00"
+        return prefs.getString("scheduled_charge_start_time_$vin", "23:00") ?: "23:00"
+    }
+
+    fun saveScheduledChargeStartTime(vin: String, time: String) {
+        if (vin.isBlank()) return
+        prefs.edit().putString("scheduled_charge_start_time_$vin", time).apply()
+    }
+
+    fun loadScheduledChargeEndTime(vin: String): String {
+        if (vin.isBlank()) return "07:00"
+        return prefs.getString("scheduled_charge_end_time_$vin", "07:00") ?: "07:00"
+    }
+
+    fun saveScheduledChargeEndTime(vin: String, time: String) {
+        if (vin.isBlank()) return
+        prefs.edit().putString("scheduled_charge_end_time_$vin", time).apply()
+    }
+
+    /** 预约充电到达停止时间未达上限时，是否继续充电（默认开启）。 */
+    fun loadScheduledChargeContinueUntilLimit(vin: String): Boolean {
+        if (vin.isBlank()) return true
+        return prefs.getBoolean("scheduled_charge_continue_until_limit_$vin", true)
+    }
+
+    fun saveScheduledChargeContinueUntilLimit(vin: String, enabled: Boolean) {
+        if (vin.isBlank()) return
+        prefs.edit().putBoolean("scheduled_charge_continue_until_limit_$vin", enabled).apply()
+    }
+
+    /** 预约充电循环方式：0=单次，1=周期重复（默认 1）。 */
+    fun loadScheduledChargeCirculation(vin: String): Int {
+        if (vin.isBlank()) return 1
+        return prefs.getInt("scheduled_charge_circulation_$vin", 1)
+    }
+
+    fun saveScheduledChargeCirculation(vin: String, circulation: Int) {
+        if (vin.isBlank()) return
+        prefs.edit().putInt("scheduled_charge_circulation_$vin", circulation).apply()
+    }
+
+    /** 预约充电重复周期：车端原生 7 位 0/1 掩码，如 "1,1,1,1,1,1,1"（默认全周）。 */
+    fun loadScheduledChargeCycles(vin: String): String {
+        if (vin.isBlank()) return "1,1,1,1,1,1,1"
+        return prefs.getString("scheduled_charge_cycles_$vin", "1,1,1,1,1,1,1") ?: "1,1,1,1,1,1,1"
+    }
+
+    fun saveScheduledChargeCycles(vin: String, cycles: String) {
+        if (vin.isBlank()) return
+        prefs.edit().putString("scheduled_charge_cycles_$vin", ChargePlanCyclesHelper.toVehicleMask(cycles)).apply()
+    }
+
+    // 预约电池预热设置（默认 23:00 开始）
+    fun loadScheduledPreheatEnabled(vin: String): Boolean {
+        if (vin.isBlank()) return false
+        return prefs.getBoolean("scheduled_preheat_enabled_$vin", false)
+    }
+
+    fun saveScheduledPreheatEnabled(vin: String, enabled: Boolean) {
+        if (vin.isBlank()) return
+        prefs.edit().putBoolean("scheduled_preheat_enabled_$vin", enabled).apply()
+    }
+
+    fun loadScheduledPreheatStartTime(vin: String): String {
+        if (vin.isBlank()) return "23:00"
+        return prefs.getString("scheduled_preheat_start_time_$vin", "23:00") ?: "23:00"
+    }
+
+    fun saveScheduledPreheatStartTime(vin: String, time: String) {
+        if (vin.isBlank()) return
+        prefs.edit().putString("scheduled_preheat_start_time_$vin", time).apply()
+    }
+
+    /** 预约电池预热重复周期：车端原生 7 位 0/1 掩码，如 "1,1,1,1,1,1,1"（默认全周）。 */
+    fun loadScheduledPreheatDays(vin: String): String {
+        if (vin.isBlank()) return "1,1,1,1,1,1,1"
+        return prefs.getString("scheduled_preheat_days_$vin", "1,1,1,1,1,1,1") ?: "1,1,1,1,1,1,1"
+    }
+
+    fun saveScheduledPreheatDays(vin: String, days: String) {
+        if (vin.isBlank()) return
+        prefs.edit().putString("scheduled_preheat_days_$vin", ChargePlanCyclesHelper.toVehicleMask(days)).apply()
+    }
+
+    // 定时空调设置（cmdid=171，默认制热 32℃、7 挡、内循环、前挡出风）
+    fun loadScheduledAcEnabled(vin: String): Boolean {
+        if (vin.isBlank()) return false
+        return prefs.getBoolean("scheduled_ac_enabled_$vin", false)
+    }
+
+    fun saveScheduledAcEnabled(vin: String, enabled: Boolean) {
+        if (vin.isBlank()) return
+        prefs.edit().putBoolean("scheduled_ac_enabled_$vin", enabled).apply()
+    }
+
+    fun loadScheduledAcStartTime(vin: String): String {
+        if (vin.isBlank()) return "07:30"
+        return prefs.getString("scheduled_ac_start_time_$vin", "07:30") ?: "07:30"
+    }
+
+    fun saveScheduledAcStartTime(vin: String, time: String) {
+        if (vin.isBlank()) return
+        prefs.edit().putString("scheduled_ac_start_time_$vin", time).apply()
+    }
+
+    /** 定时空调重复周期：车端原生 7 位 0/1 掩码，如 "1,1,1,1,1,1,1"（默认全周）。 */
+    fun loadScheduledAcDays(vin: String): String {
+        if (vin.isBlank()) return "1,1,1,1,1,1,1"
+        return prefs.getString("scheduled_ac_days_$vin", "1,1,1,1,1,1,1") ?: "1,1,1,1,1,1,1"
+    }
+
+    fun saveScheduledAcDays(vin: String, days: String) {
+        if (vin.isBlank()) return
+        prefs.edit().putString("scheduled_ac_days_$vin", ChargePlanCyclesHelper.toVehicleMask(days)).apply()
+    }
+
+    fun loadScheduledAcTemperature(vin: String): Int {
+        if (vin.isBlank()) return 32
+        return prefs.getInt("scheduled_ac_temperature_$vin", 32)
+    }
+
+    fun saveScheduledAcTemperature(vin: String, temperature: Int) {
+        if (vin.isBlank()) return
+        prefs.edit().putInt("scheduled_ac_temperature_$vin", temperature).apply()
+    }
+
+    fun loadScheduledAcWindLevel(vin: String): Int {
+        if (vin.isBlank()) return 7
+        return prefs.getInt("scheduled_ac_wind_level_$vin", 7)
+    }
+
+    fun saveScheduledAcWindLevel(vin: String, windLevel: Int) {
+        if (vin.isBlank()) return
+        prefs.edit().putInt("scheduled_ac_wind_level_$vin", windLevel).apply()
+    }
+
+    fun loadScheduledAcMode(vin: String): String {
+        if (vin.isBlank()) return ScheduledAcMode.HOT.name
+        return prefs.getString("scheduled_ac_mode_$vin", ScheduledAcMode.HOT.name)
+            ?: ScheduledAcMode.HOT.name
+    }
+
+    fun saveScheduledAcMode(vin: String, mode: ScheduledAcMode) {
+        if (vin.isBlank()) return
+        prefs.edit().putString("scheduled_ac_mode_$vin", mode.name).apply()
+    }
+
+    fun loadScheduledAcCircle(vin: String): String {
+        if (vin.isBlank()) return AirCircle.INNER.name
+        return prefs.getString("scheduled_ac_circle_$vin", AirCircle.INNER.name)
+            ?: AirCircle.INNER.name
+    }
+
+    fun saveScheduledAcCircle(vin: String, circle: AirCircle) {
+        if (vin.isBlank()) return
+        prefs.edit().putString("scheduled_ac_circle_$vin", circle.name).apply()
+    }
+
+    fun loadScheduledAcDefrost(vin: String): Boolean {
+        if (vin.isBlank()) return true
+        return prefs.getBoolean("scheduled_ac_defrost_$vin", true)
+    }
+
+    fun saveScheduledAcDefrost(vin: String, defrost: Boolean) {
+        if (vin.isBlank()) return
+        prefs.edit().putBoolean("scheduled_ac_defrost_$vin", defrost).apply()
+    }
+
+    /** 用户确认的车型配置，按 VIN 隔离保存，避免多车续航规则串用。 */
+    fun loadVehicleConfig(
+        vin: String,
+        defaultModel: String = "",
+        defaultNickname: String = "",
+        defaultYear: String = "",
+        defaultPowerType: VehiclePowerType? = null
+    ): VehicleConfig {
+        if (vin.isBlank()) return VehicleConfig()
+        val prefix = VehicleConfigStorageKeys.prefix(vin) ?: return VehicleConfig()
+        val storedType = when (appPrefs.getString(prefix + "power_type", null)) {
+            "pure_electric" -> VehiclePowerType.PURE_ELECTRIC
+            "range_extender" -> VehiclePowerType.RANGE_EXTENDER
+            else -> null
+        }
+        val type = VehiclePowerTypeResolver.fromVehicleConfig(
+            vin = vin,
+            configuredPowerType = storedType,
+            carType = defaultModel,
+            defaultPowerType = defaultPowerType,
+            vehicles = loadVehicles()
+        )
+        val storedModel = appPrefs.getString(prefix + "model", "")?.trim().orEmpty()
+        // 读出来也要归一：老版本把接口代号（B05）按原样存进了配置，只改写入侧
+        // 治不了存量数据 —— 车主已经确认过的车，照样会在「我的」页显示 B05。
+        val selectedModel = VehicleModels.canonical(storedModel.ifBlank { defaultModel.trim() })
+        val storedColor = appPrefs.getString(prefix + "color", "")?.trim().orEmpty()
+        val storedYear = appPrefs.getString(prefix + "model_year", "")?.trim().orEmpty()
+        val selectedYear = storedYear.ifBlank { defaultYear.trim() }
+        val storedNickname = appPrefs.getString(prefix + "nickname", "")?.trim().orEmpty()
+        val selectedNickname = storedNickname.ifBlank { defaultNickname.trim() }
+        return VehicleConfig(
+            modelYear = selectedYear,
+            powerType = type,
+            model = selectedModel,
+            color = VehicleAppearanceCatalog.normalizeColor(selectedModel, storedColor).orEmpty(),
+            nickname = selectedNickname
+        )
+    }
+
+    fun saveVehicleConfig(vin: String, config: VehicleConfig) {
+        if (vin.isBlank()) return
+        val prefix = VehicleConfigStorageKeys.prefix(vin) ?: return
+        val normalizedModel = VehicleConfigConfirmationPolicy.normalizeModel(config.model)
+        val normalizedColor = VehicleAppearanceCatalog.normalizeColor(normalizedModel, config.color)
+        val confirmationSchema = VehicleConfigConfirmationPolicy.schemaToPersist(
+            model = normalizedModel.orEmpty(),
+            modelYear = config.modelYear,
+            powerType = config.powerType,
+            color = normalizedColor
+        )
+        appPrefs.edit()
+            .putString(prefix + "model_year", config.modelYear.trim())
+            .putString(prefix + "model", normalizedModel ?: config.model.trim())
+            .putString(prefix + "nickname", config.nickname.trim())
+            .apply {
+                if (normalizedColor == null) remove(prefix + "color")
+                else putString(prefix + "color", normalizedColor)
+            }
+            .apply {
+                if (config.powerType == null) remove(prefix + "power_type")
+                else putString(prefix + "power_type", if (config.powerType == VehiclePowerType.PURE_ELECTRIC) "pure_electric" else "range_extender")
+                confirmationSchema?.let {
+                    VehicleConfigConfirmationPolicy.confirmationPreferenceKey(vin)?.let { key ->
+                        putInt(key, it)
+                    }
+                } ?: VehicleConfigConfirmationPolicy.confirmationPreferenceKey(vin)?.let { key ->
+                    remove(key)
+                }
+            }
+            .apply()
+    }
+
+    fun saveVehiclePowerType(vin: String, powerType: VehiclePowerType) {
+        if (vin.isBlank()) return
+        val prefix = VehicleConfigStorageKeys.prefix(vin) ?: return
+        appPrefs.edit()
+            .putString(prefix + "power_type", if (powerType == VehiclePowerType.PURE_ELECTRIC) "pure_electric" else "range_extender")
+            .putBoolean(prefix + "power_type_confirmed", true)
+            .apply()
+    }
+
+    fun isVehiclePowerTypeConfirmed(vin: String): Boolean {
+        if (vin.isBlank()) return false
+        val prefix = VehicleConfigStorageKeys.prefix(vin) ?: return false
+        return appPrefs.getBoolean(prefix + "power_type_confirmed", false)
+    }
+
+    /** 撤销手动指定的动力类型，回到「自动推断」。 */
+    fun clearVehiclePowerType(vin: String) {
+        if (vin.isBlank()) return
+        val prefix = VehicleConfigStorageKeys.prefix(vin) ?: return
+        appPrefs.edit()
+            .remove(prefix + "power_type")
+            .remove(prefix + "power_type_confirmed")
+            .apply()
+    }
+
+    fun isVehicleConfigConfirmed(vin: String): Boolean {
+        val key = VehicleConfigConfirmationPolicy.confirmationPreferenceKey(vin) ?: return false
+        val storedSchemaVersion = appPrefs.getInt(key, 0)
+        if (!VehicleConfigConfirmationPolicy.isConfirmed(storedSchemaVersion)) return false
+        val config = loadVehicleConfig(vin)
+        return VehicleConfigConfirmationPolicy.isValid(
+            model = config.model,
+            modelYear = config.modelYear,
+            powerType = config.powerType,
+            color = config.color
+        )
+    }
+
+    /** Charging notifications are always enabled; the preference remains readable for migration. */
+    fun loadChargeNotificationsEnabled(): Boolean = true
+
+    /** Parking anomaly notifications are always enabled; the preference remains readable for migration. */
+    fun loadParkingAnomalyNotificationsEnabled(): Boolean = true
+
+    fun loadAppearanceMode(): AppearanceMode =
+        AppearanceMode.fromPreference(appPrefs.getString(APPEARANCE_MODE, null))
+
+    fun saveAppearanceMode(mode: AppearanceMode) {
+        appPrefs.edit().putString(APPEARANCE_MODE, mode.name).apply()
+    }
+
+    fun loadCustomAmapWebKey(): String? =
+        appPrefs.getString(CUSTOM_AMAP_WEB_KEY, null)?.trim()?.takeIf { it.isNotEmpty() }
+
+    fun saveCustomAmapWebKey(key: String?) {
+        val clean = key?.trim().orEmpty()
+        if (clean.isEmpty()) {
+            appPrefs.edit().remove(CUSTOM_AMAP_WEB_KEY).apply()
+        } else {
+            appPrefs.edit().putString(CUSTOM_AMAP_WEB_KEY, clean).apply()
+        }
+    }
+
+    fun loadBaiduAsrApiKey(): String? =
+        appPrefs.getString(BAIDU_ASR_API_KEY, null)?.trim()?.takeIf { it.isNotEmpty() }
+
+    fun loadBaiduAsrSecretKey(): String? =
+        appPrefs.getString(BAIDU_ASR_SECRET_KEY, null)?.trim()?.takeIf { it.isNotEmpty() }
+
+    fun saveBaiduAsrKeys(apiKey: String?, secretKey: String?) {
+        val api = apiKey?.trim().orEmpty()
+        val secret = secretKey?.trim().orEmpty()
+        appPrefs.edit().apply {
+            if (api.isEmpty()) remove(BAIDU_ASR_API_KEY) else putString(BAIDU_ASR_API_KEY, api)
+            if (secret.isEmpty()) remove(BAIDU_ASR_SECRET_KEY) else putString(BAIDU_ASR_SECRET_KEY, secret)
+        }.apply()
+    }
+
+    fun loadBluetoothKeyFeatureEnabled(): Boolean =
+        appPrefs.getBoolean(BLUETOOTH_KEY_FEATURE_ENABLED, false)
+
+    fun saveBluetoothKeyFeatureEnabled(enabled: Boolean) {
+        appPrefs.edit().putBoolean(BLUETOOTH_KEY_FEATURE_ENABLED, enabled).apply()
+    }
+
+    // ---- 桌面图标切换 ----
+    // 真正的开关状态在 PackageManager 里（alias 的 enabled 状态），这里只做一份冗余记录，
+    // 用于启动时校准，以及「个性化」里回显当前选中哪一套。
+
+    /** 没记录过就是官方 logo（2026-11-09 起的默认值）。 */
+    fun loadLauncherIconStyle(): String =
+        appPrefs.getString(LAUNCHER_ICON_STYLE, null)?.takeIf { it.isNotBlank() }
+            ?: LauncherIcon.STYLE_OFFICIAL
+
+    fun saveLauncherIconStyle(style: String) {
+        appPrefs.edit().putString(LAUNCHER_ICON_STYLE, style).apply()
+    }
+
+    fun loadPowerPagerAutoPlayEnabled(): Boolean =
+        appPrefs.getBoolean(POWER_PAGER_AUTO_PLAY_ENABLED, false)
+
+    fun savePowerPagerAutoPlayEnabled(enabled: Boolean) {
+        appPrefs.edit().putBoolean(POWER_PAGER_AUTO_PLAY_ENABLED, enabled).apply()
+    }
+
+    fun loadQuickCommandOrder(vin: String): List<String>? =
+        vin.trim().takeIf { it.isNotEmpty() }
+            ?.let { appPrefs.getString(quickCommandOrderKey(it), null) }
+            ?.split(',')
+            ?.map(String::trim)
+            ?.filter(String::isNotEmpty)
+            ?.takeIf { it.isNotEmpty() }
+
+    fun saveQuickCommandOrder(vin: String, order: List<String>) {
+        val normalizedVin = vin.trim()
+        if (normalizedVin.isEmpty()) return
+        appPrefs.edit()
+            .putString(quickCommandOrderKey(normalizedVin), order.joinToString(","))
+            .apply()
+    }
+
+    fun clearQuickCommandOrder(vin: String) {
+        val normalizedVin = vin.trim()
+        if (normalizedVin.isEmpty()) return
+        appPrefs.edit().remove(quickCommandOrderKey(normalizedVin)).apply()
+    }
+
+    /**
+     * Records the newest public version that the user has already handled in the
+     * update prompt. It intentionally lives in app preferences and survives logout.
+     */
+    fun loadHandledUpdateVersion(): String? =
+        appPrefs.getString(HANDLED_UPDATE_VERSION, null)?.trim()?.takeIf { it.isNotEmpty() }
+
+    fun saveHandledUpdateVersion(version: String) {
+        val normalized = version.trim()
+        if (normalized.isEmpty()) return
+        appPrefs.edit().putString(HANDLED_UPDATE_VERSION, normalized).apply()
+    }
+
+    /** Last observed charge state, isolated by vehicle so a switch cannot create a false transition. */
+    fun loadLastChargeState(vin: String): Int? =
+        vin.takeIf { it.isNotBlank() }?.let { prefs.getString(lastChargeStateKey(it), null)?.toIntOrNull() }
+
+    fun saveLastChargeState(vin: String, state: Int?) {
+        if (vin.isBlank()) return
+        prefs.edit().apply {
+            if (state == null) remove(lastChargeStateKey(vin)) else putString(lastChargeStateKey(vin), state.toString())
+        }.apply()
+    }
+
+    private fun lastChargeStateKey(vin: String): String = "${LAST_CHARGE_STATE}_$vin"
+
+    fun loadVehicleBluetoothMac(vin: String): String? {
+        val safeVin = vin.replace(Regex("[^A-Za-z0-9]"), "_")
+        return appPrefs.getString("vehicle_bt_mac_$safeVin", null)?.takeIf { it.isNotBlank() }
+    }
+
+    fun saveVehicleBluetoothMac(vin: String, mac: String) {
+        val safeVin = vin.replace(Regex("[^A-Za-z0-9]"), "_")
+        val clean = mac.trim().uppercase()
+        if (clean.isNotBlank()) {
+            appPrefs.edit().putString("vehicle_bt_mac_$safeVin", clean).apply()
+        }
+    }
+
+    fun loadSelectedThemeId(vin: String): String? {
+        val safeVin = vin.replace(Regex("[^A-Za-z0-9]"), "_")
+        val perVin = if (safeVin.isNotBlank()) {
+            appPrefs.getString("$SELECTED_THEME_ID_PREFIX$safeVin", null)?.takeIf { it.isNotBlank() }
+        } else null
+        return perVin ?: appPrefs.getString(SELECTED_THEME_ID_GLOBAL, null)?.takeIf { it.isNotBlank() }
+    }
+
+    fun saveSelectedThemeId(vin: String, themeId: String?) {
+        val safeVin = vin.replace(Regex("[^A-Za-z0-9]"), "_")
+        val editor = appPrefs.edit()
+        if (themeId.isNullOrBlank()) {
+            if (safeVin.isNotBlank()) editor.remove("$SELECTED_THEME_ID_PREFIX$safeVin")
+            editor.remove(SELECTED_THEME_ID_GLOBAL)
+        } else {
+            val clean = themeId.trim()
+            if (safeVin.isNotBlank()) editor.putString("$SELECTED_THEME_ID_PREFIX$safeVin", clean)
+            editor.putString(SELECTED_THEME_ID_GLOBAL, clean)
+        }
+        editor.commit()
+    }
+
+    companion object {
+        const val SELECTED_THEME_ID_PREFIX = "selected_theme_id_"
+        const val SELECTED_THEME_ID_GLOBAL = "selected_theme_id_global"
+        const val SESSION_GENERATION = "session_generation"
+        const val QUICK_COMMAND_ORDER_PREFIX = "quick_command_order_"
+        const val HANDLED_UPDATE_VERSION = "handled_update_version"
+        const val APPEARANCE_MODE = "appearance_mode"
+        const val CUSTOM_AMAP_WEB_KEY = "custom_amap_web_key"
+        const val BAIDU_ASR_API_KEY = "baidu_asr_api_key"
+        const val BAIDU_ASR_SECRET_KEY = "baidu_asr_secret_key"
+        const val LAUNCHER_ICON_STYLE = "launcher_icon_style"
+        const val BLUETOOTH_KEY_FEATURE_ENABLED = "bluetooth_key_feature_enabled"
+        const val LAST_CHARGE_STATE = "last_charge_state"
+        const val POWER_PAGER_AUTO_PLAY_ENABLED = "power_pager_auto_play_enabled"
+
+        fun quickCommandOrderKey(vin: String): String = QUICK_COMMAND_ORDER_PREFIX + vin
+
+        val SESSION_LOCK = Any()
+    }
+}
