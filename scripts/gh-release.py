@@ -51,6 +51,11 @@ def ensure_release(tag: str, token: str, notes: str, draft: bool, prerelease: bo
     existing = request("GET", f"{base}/tags/{tag}", token, tolerate=(404,)) or {}
     if "id" in existing:
         print(f"Release {tag} 已存在（id={existing['id']}），复用")
+        # 重发时说明也得跟着换，否则用户看到的还是上一版的口径
+        if notes and (existing.get("body") or "") != notes:
+            print("  更新 Release 说明")
+            updated = request("PATCH", f"{base}/{existing['id']}", token, {"body": notes})
+            return updated or existing
         return existing
     print(f"创建 Release {tag}")
     return request("POST", base, token, {
@@ -62,10 +67,27 @@ def ensure_release(tag: str, token: str, notes: str, draft: bool, prerelease: bo
     })
 
 
+def purge_asset(release: dict, name: str, token: str) -> None:
+    """删掉同名旧附件。
+
+    GitHub 的附件上传接口不允许覆盖：同名文件会直接 422。重发同一个版本号时
+    必须先把旧的删掉，否则会出现「代码已经更新、用户下到的还是旧包」——
+    比报错更难发现。
+    """
+    base = f"https://api.github.com/repos/{REPO_FULL}"
+    assets = request("GET", f"{base}/releases/{release['id']}/assets?per_page=100",
+                     token, tolerate=(404,)) or []
+    for a in assets if isinstance(assets, list) else []:
+        if a.get("name") == name:
+            print(f"  删除旧附件 {name}（id={a['id']}）")
+            request("DELETE", f"{base}/releases/assets/{a['id']}", token, tolerate=(404,))
+
+
 def upload_asset(release: dict, path: str, token: str) -> None:
     name = os.path.basename(path)
     size = os.path.getsize(path)
     ctype = mimetypes.guess_type(name)[0] or "application/vnd.android.package-archive"
+    purge_asset(release, name, token)
     url = f"https://{UPLOAD_HOST}/repos/{REPO_FULL}/releases/{release['id']}/assets?name={urllib.parse.quote(name)}"
     with open(path, "rb") as f:
         data = f.read()
