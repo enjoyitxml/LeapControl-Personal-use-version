@@ -60,7 +60,7 @@ private enum class PayQr(
 }
 
 /**
- * 「支持开发者」页（从「我的」进入）：展示支付宝 / 微信收款码，可保存到相册。
+ * 「支持作者」页（从「我的」进入）：展示支付宝 / 微信收款码，可保存到相册。
  *
  * 保存走 MediaStore：Android 10 起无需任何权限；Android 9 及以下需要
  * WRITE_EXTERNAL_STORAGE，由页面在点击时按需申请（manifest 里也只声明到 28）。
@@ -68,7 +68,7 @@ private enum class PayQr(
  * ## 为什么删了又加回来
  * 2026-11-09 自用版按用户要求下线了整个「对外入口」组（这份页面连同收款码图片一起删掉）。
  * 2026-11-15 分叉出**公开的个人学习版**时又需要它：那一版是发给外人的，
- * 有人想支持一下开发者得有个正经入口。所以文件与两张收款码图片从 v1.1.2 之前的提交恢复，
+ * 有人想支持一下作者得有个正经入口。所以文件与两张收款码图片从 v1.1.2 之前的提交恢复，
  * **只在 [PERSONAL_EDITION] 为真时才会被路由到**（自用版的「我的」页不显示这个入口）。
  */
 @Composable
@@ -97,7 +97,7 @@ fun SupportScreen(
             .padding(horizontal = 22.dp),
     ) {
         Spacer(Modifier.height(12.dp))
-        SettingsTopBar(title = "支持开发者", onBack = onBack)
+        SettingsTopBar(title = "支持作者", onBack = onBack)
         Spacer(Modifier.height(14.dp))
 
         // ---- 心里话 ----

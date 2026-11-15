@@ -86,7 +86,7 @@ class UsageNoticeTest {
             profileSrc.contains("if (SHOW_EXTERNAL_ENTRIES) {"),
         )
         assertTrue(
-            "个人学习版没接上「支持开发者」入口",
+            "个人学习版没接上「支持作者」入口",
             profileSrc.contains("if (PERSONAL_EDITION)"),
         )
         assertTrue("「我的」页还残留硬编码的「开源协议与致谢」", profileSrc.contains("\"开源协议与致谢\""))

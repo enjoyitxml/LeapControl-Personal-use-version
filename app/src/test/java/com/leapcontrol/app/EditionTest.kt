@@ -11,7 +11,7 @@ import org.junit.Test
  * ## 背景
  * 2026-11-15 起同一个工程出两个包（见 [PERSONAL_EDITION]）：
  *  - **自用版** `full`：私有仓库，零跑官方 logo、登录标语、只有小圈子用；
- *  - **个人学习版** `personal`：公开仓库，去掉全部品牌 logo、「我的」页恢复支持开发者与致谢、
+ *  - **个人学习版** `personal`：公开仓库，去掉全部品牌 logo、「我的」页恢复支持作者与致谢、
  *    使用范围改成「仅限个人学习研究使用」。
  *
  * 两条线共用一份源码，差异只能收敛在 `PERSONAL_EDITION` 这一个开关上。
@@ -143,18 +143,18 @@ class EditionTest {
     }
 
     @Test
-    fun `我的页在个人学习版恢复支持开发者与开源致谢`() {
+    fun `我的页在个人学习版恢复支持作者与开源致谢`() {
         assertTrue(
-            "「支持开发者」入口没接版本开关",
+            "「支持作者」入口没接版本开关",
             profileSrc.contains("if (PERSONAL_EDITION)") &&
-                profileSrc.contains("\"支持开发者\""),
+                profileSrc.contains("\"支持作者\""),
         )
         assertTrue(
             "开源致谢入口在个人学习版也要显示",
             profileSrc.contains("if (SHOW_EXTERNAL_ENTRIES || PERSONAL_EDITION)"),
         )
         assertTrue(
-            "「支持开发者」页没接路由",
+            "「支持作者」页没接路由",
             mainSrc.contains("SettingsPage.SUPPORT -> SupportScreen("),
         )
         assertTrue(

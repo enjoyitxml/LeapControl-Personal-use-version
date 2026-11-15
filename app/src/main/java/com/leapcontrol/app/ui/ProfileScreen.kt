@@ -250,8 +250,8 @@ fun ProfileScreen(
             if (PERSONAL_EDITION) {
                 ProfileItem(
                     R.drawable.ic_support,
-                    "支持开发者",
-                    "零控完全免费，欢迎请开发者喝杯咖啡",
+                    "支持作者",
+                    "零控完全免费，欢迎请作者喝杯咖啡",
                 ) { onOpenPage(SettingsPage.SUPPORT) }
                 Spacer(Modifier.height(ITEM_GAP))
             }

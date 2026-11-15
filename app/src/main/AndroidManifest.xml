@@ -34,7 +34,7 @@
         tools:node="remove" />
     <!-- 应用内下载新版本后直接唤起系统安装器（Android 8+ 还需用户在系统里授权一次） -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
-    <!-- 「支持开发者」页把收款码存到相册：Android 10 起走 MediaStore 不需要权限，
+    <!-- 「支持作者」页把收款码存到相册：Android 10 起走 MediaStore 不需要权限，
          只有 Android 8 / 9 要这一条，所以声明到 28 为止（新系统上不会出现在权限列表里） -->
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"

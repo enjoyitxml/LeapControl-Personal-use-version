@@ -9,7 +9,8 @@
 
   1. `gradle.properties`：写入 `leapcontrol.edition=personal`，并删掉内置的 GitHub 令牌密文
      （公开仓库绝不能带能读私有仓库的凭据）；
-  2. `README.md`：换成 `docs/public/README.md`（面向外部读者）；
+  2. `README.md`：逐条改写成对外说法（包名、仓库地址、去掉传播限制），并删掉「最近更新」一节
+     —— 那一节是给老用户看增量的，公开仓库只看 Releases 就够；
   3. 六份小组件布局：`android:src` 的零跑 V 标换成方向盘、设计态标题换成「我的爱车」
      —— 桌面小组件的**预览图**是按布局静态渲染的，只改运行时不改布局的话，
      添加小组件时的那张预览图上仍然是零跑 logo；
@@ -169,7 +170,7 @@ def public_gradle_properties(src: str) -> str:
     while lines and not lines[-1].strip():
         lines.pop()
     lines.append("")
-    lines.append("# 个人学习版：与自用版共用同一份源码，差异由这个开关驱动（见 Edition.kt）")
+    lines.append("# 个人学习版构建开关（差异见 Edition.kt）")
     lines.append("leapcontrol.edition=personal")
     return "\n".join(lines) + "\n"
 
@@ -198,18 +199,22 @@ def patched_manifest(src: str) -> str:
 # 包名不同、仓库地址不同、「请勿外传 / 请勿二次分发」放在公开仓库里自相矛盾、
 # 内置令牌在公开版根本不存在。所以组装公开树时逐条改成公开版的说法。
 #
+# 另一条铁律（用户 2026-11-15 追加）：**公开仓库里不许提「自用版」这个私有版本**。
+# 读者只该看到「这个仓库是什么」，不该看到「它跟另一个不公开的版本有什么区别」。
+# 所以改写后的文案里一律不出现「自用版 / 私有版 / 另一个版本」这类字眼。
+#
 # **哪条没命中就直接报错**：README 改了措辞之后，脚本必须当场喊出来，
 # 否则公开仓库会悄悄带着自用版的说法发出去（这类漏改只有读者会发现）。
 README_REWRITES: list[tuple[str, str]] = [
     (
         "零跑汽车第三方控车 Android 应用，包名 `com.leapcontrol.app`。\n",
-        "零跑汽车第三方控车 Android 应用（个人学习研究版），包名 `com.leapcontrol.personal`，可与自用版同时安装。\n",
+        "零跑汽车第三方控车 Android 应用（个人学习研究版），包名 `com.leapcontrol.personal`。\n",
     ),
     (
         "> 📖 **本项目已在 GitHub 开源**：<https://github.com/enjoyitxml/LeapControl>，基于开源项目二次开发。\n"
         "> **仅供车友自用体验与交流，请勿外传、请勿二次分发**，也不要上传到应用商店、网盘、论坛等任何公开渠道。\n",
         "> 📖 **本仓库用于个人学习与技术研究**：<https://github.com/enjoyitxml/LeapControl-Personal-use-version>，基于开源项目二次开发。\n"
-        "> 与自用版功能完全一致，只去掉品牌标识、补回「支持开发者」与「开源协议与致谢」入口。\n",
+        "> 本仓库不含任何品牌标识，源码全部公开，欢迎查阅与自行编译。\n",
     ),
     (
         "| 本仓库 | <https://github.com/enjoyitxml/LeapControl> |\n",
@@ -234,7 +239,7 @@ README_REWRITES: list[tuple[str, str]] = [
         "\n"
         "1. 零控本身已在 GitHub 开源：<https://github.com/enjoyitxml/LeapControl-Personal-use-version>，源码可查阅、可自行编译。\n"
         "2. 二次开发部分同样公开，欢迎提 issue 或 PR 一起完善。\n"
-        "3. 本版本面向个人学习与技术研究，与自用版功能一致。\n",
+        "3. 本版本面向个人学习与技术研究，请在学习研究后及时卸载。\n",
     ),
     (
         "### 五、使用范围与传播\n"
@@ -288,7 +293,30 @@ def public_readme(src: str) -> str:
                 + old.splitlines()[0][:80]
             )
         out = out.replace(old, new, 1)
+    out = strip_latest_updates(out)
+    # 兜底：公开 README 里绝不许出现私有版本的踪迹（上一轮就是靠这条才没漏）
+    for banned in ("自用版", "私有仓库", "com.leapcontrol.app"):
+        if banned in out:
+            raise Fail(f"公开 README 里还剩下「{banned}」，改写规则没盖全")
     return out
+
+
+def strip_latest_updates(src: str) -> str:
+    """删掉「最近更新」整节与目录项，只留末尾那句「完整记录见 CHANGELOG / Releases」。
+
+    公开仓库不需要逐条罗列增量（那一节本来是给老用户看的），而且版本号越落越远
+    （2026-11-15 时它还停在 v1.2.3）—— 要看变更直接跳 CHANGELOG 或 Releases。
+    """
+    toc = "- [最近更新](#最近更新)\n"
+    head = "## 最近更新\n"
+    keep = "完整记录见 [CHANGELOG.md](CHANGELOG.md)"
+    if toc not in src or head not in src or keep not in src:
+        raise Fail(
+            "README 里找不到「最近更新」一节 / 目录项 / 末尾的 CHANGELOG 指路句，删除规则可能过时了"
+        )
+    i = src.index(head)
+    j = src.index(keep, i)
+    return (src[:i] + src[j:]).replace(toc, "", 1)
 
 
 def build_tree(root: str, tmp: str) -> str:
@@ -382,7 +410,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="lc-public-") as tmp:
         tree = build_tree(root, tmp)
         parent = remote_head(tok)
-        message = f"release: v{version} 个人学习版\n\n由 publish-personal.py 从自用版同版本源码生成。"
+        message = f"release: v{version} 个人学习版"
         cmd = ["commit-tree", tree, "-m", message]
         if parent:
             cmd += ["-p", parent]

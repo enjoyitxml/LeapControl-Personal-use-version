@@ -59,7 +59,7 @@ val BUILTIN_GH_TOKEN_ENCRYPTED =
  * 使用范围文案、更新仓库地址都跟着切；版本号（versionName / versionCode）完全同步。
  *
  * 不传这个属性时行为与分叉前**逐字节一致**（包名 com.leapcontrol.app、官方 logo、
- * 无「支持开发者」入口），自用版不受影响。
+ * 无「支持作者」入口），自用版不受影响。
  */
 val appEdition = (project.findProperty("leapcontrol.edition") as String?)
     ?.trim().orEmpty().ifEmpty { "full" }
@@ -98,7 +98,7 @@ android {
         // 私有仓库的只读令牌（密文）：只用于 Releases 查询与附件下载
         buildConfigField("String", "GITHUB_TOKEN_ENCRYPTED", "\"$ghTokenEncrypted\"")
         // ---- 版本分叉 ----
-        // 个人学习版：方向盘 logo、无登录标语、「我的」页恢复支持开发者与开源致谢、
+        // 个人学习版：方向盘 logo、无登录标语、「我的」页恢复支持作者与开源致谢、
         // 使用范围改为「仅限个人学习研究使用」、更新检测指向公开仓库。
         buildConfigField("boolean", "PERSONAL_EDITION", personalEdition.toString())
         buildConfigField(
