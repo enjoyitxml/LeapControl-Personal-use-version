@@ -61,7 +61,7 @@ object LauncherIcon {
      * 默认值翻到官方（2026-11-09）后这个方向必须跟着翻：否则新装用户两个 alias 都是
      * DEFAULT，会永远判成方向盘，界面显示的选中项和桌面图标不一致。
      *
-     * 个人学习版只有方向盘一套（[PERSONAL_EDITION]），不存在「正在用哪个」的问题，
+     * 公开版只有方向盘一套（[PERSONAL_EDITION]），不存在「正在用哪个」的问题，
      * 直接返回方向盘 —— 否则界面（若还有残留入口）会显示成官方、与桌面图标对不上。
      */
     fun current(context: Context): String {
@@ -101,13 +101,13 @@ object LauncherIcon {
      * 启动时校准：清单里的默认值不可靠（升级安装会保留旧的组件状态），
      * 以持久化记录为准重放一次，保证桌面图标与用户上次的选择一致。
      *
-     * 个人学习版没有「选择」这回事：[PERSONAL_EDITION] 下固定方向盘，
+     * 公开版没有「选择」这回事：[PERSONAL_EDITION] 下固定方向盘，
      * 而且**不能**照 [style] 回放 —— 偏好里存的默认值仍是官方，
      * 照它回放会把刚装好的方向盘图标又翻回零跑 logo。
      */
     fun ensureApplied(context: Context, style: String) {
         if (PERSONAL_EDITION) {
-            // 清单默认已是方向盘；这里只处理「装过自用版、组件状态被改过」的残留
+            // 清单默认已是方向盘；这里只处理「装过完整版、组件状态被改过」的残留
             if (!isExplicitlyDisabled(context, STYLE_OFFICIAL) || !isExplicitlyEnabled(context, STYLE_STEERING)) {
                 runCatching { apply(context, STYLE_STEERING) }
             }

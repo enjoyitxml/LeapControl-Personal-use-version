@@ -110,8 +110,8 @@ fun LoginScreen(
             // 默认零跑官方标志（图标默认值已翻到官方；2026-11-09），
             // 只有在「个性化 → 应用图标」里切成方向盘时才显示通用方向盘图形，
             // 两处保持一致，避免桌面是一个标、进去看到另一个标。
-            // 个人学习版（[PERSONAL_EDITION]）去掉全部品牌 logo，固定方向盘。
-            // 写成 if/else 而不是 `!PERSONAL_EDITION && …`：前者在个人版的构建里是常量
+            // 公开版（[PERSONAL_EDITION]）去掉全部品牌 logo，固定方向盘。
+            // 写成 if/else 而不是 `!PERSONAL_EDITION && …`：前者在公开版的构建里是常量
             // `false`，R8 会把下面的官方图标分支整个折掉，「零跑汽车」这句无障碍描述
             // 也就不会残留在公开包 dex 的字符串池里。
             val officialIcon = if (PERSONAL_EDITION) {
@@ -141,7 +141,7 @@ fun LoginScreen(
             )
             Spacer(Modifier.height(8.dp))
             // ---- slogan ----
-            // 个人学习版不出现「零跑控车，自在随行」：这句是品牌标语，
+            // 公开版不出现「零跑控车，自在随行」：这句是品牌标语，
             // 与「不含任何品牌元素」的口径冲突（2026-11-15 用户要求）。
             if (!PERSONAL_EDITION) {
                 Text(
@@ -295,7 +295,7 @@ fun LoginScreen(
             // 登录是每个用户必经的一屏，把它放这儿比藏在「关于」二级页里更看得见。
             // 文案与「关于」页共用 [USAGE_NOTICE_LINES]，两边永远一致。
             // 星空上不做大字号：10.5sp / 行高 16.5sp 在深底上仍清楚，也不会把登录按钮往上顶。
-            // 个人学习版（[PERSONAL_EDITION]）整块不显示：那套「仅限个人学习研究、请及时卸载」
+            // 公开版（[PERSONAL_EDITION]）整块不显示：那套「仅限个人学习研究、请及时卸载」
             // 的口径放在公开分发的应用里自相矛盾（用户 2026-11-15 要求去掉）。
             if (!PERSONAL_EDITION) {
                 Column(

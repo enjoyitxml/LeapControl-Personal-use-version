@@ -21,7 +21,7 @@ plugins {
  * `LEAPCONTROL_GH_TOKEN` → `gradle.properties` 里的内置密文。前两者是本机明文，方便换 token
  * 后不改编代码；都没有的时候用内置密文兜底，保证**任何一台机器构建出来的包**都能正常检查更新
  * （否则换台电脑发版，更新检查会静默失效，很难察觉）。
- * 个人学习版构建时一律为空（见下方 `ghTokenEncrypted`），公开包不携带任何凭据。
+ * 公开版构建时一律为空（见下方 `ghTokenEncrypted`），公开包不携带任何凭据。
  */
 val localProps = Properties().apply {
     val f = rootProject.file("local.properties")
@@ -43,7 +43,7 @@ val encodeSecret: (String) -> String = { plain ->
  * 内置的只读令牌（密文）。仅具备 releases 读取权限，用于版本检测与安装包下载。
  *
  * 2026-11-15 从源码常量挪到 `gradle.properties` 的 `leapcontrol.gh.token.encrypted`：
- * 仓库现在要分叉出一个**公开**的个人学习版，密文留在源码里就等于随源码一起公开
+ * 仓库现在要分叉出一个**对外发布**的公开版，密文留在源码里就等于随源码一起公开
  * （密文用的是一眼能反推的 XOR 盐，公开即等于泄露读取权限）。放在构建属性里，
  * 公开仓库的那份 properties 不带这个键，构建出来的包自然没有令牌、走匿名接口。
  */
@@ -51,7 +51,7 @@ val BUILTIN_GH_TOKEN_ENCRYPTED =
     (project.findProperty("leapcontrol.gh.token.encrypted") as String?)?.trim().orEmpty()
 
 /**
- * 版本分叉开关：`full`（默认，自用版）与 `personal`（公开的个人学习版）。
+ * 版本分叉开关：`full`（默认，完整版）与 `personal`（公开版）。
  *
  * 两个仓库共用同一份源码，差异全部由这个属性驱动 —— 公开仓库在自己的
  * `gradle.properties` 里写 `leapcontrol.edition=personal`，于是同一个提交
@@ -59,7 +59,7 @@ val BUILTIN_GH_TOKEN_ENCRYPTED =
  * 使用范围文案、更新仓库地址都跟着切；版本号（versionName / versionCode）完全同步。
  *
  * 不传这个属性时行为与分叉前**逐字节一致**（包名 com.leapcontrol.app、官方 logo、
- * 无「支持作者」入口），自用版不受影响。
+ * 无「支持作者」入口），完整版不受影响。
  */
 val appEdition = (project.findProperty("leapcontrol.edition") as String?)
     ?.trim().orEmpty().ifEmpty { "full" }
@@ -73,7 +73,7 @@ val ghTokenOverride = (
 
 val ghTokenEncrypted =
     when {
-        // 个人学习版不内置任何令牌：公开仓库的更新检测走匿名接口
+        // 公开版不内置任何令牌：公开仓库的更新检测走匿名接口
         personalEdition -> ""
         ghTokenOverride.isNotEmpty() -> encodeSecret(ghTokenOverride)
         else -> BUILTIN_GH_TOKEN_ENCRYPTED
@@ -85,20 +85,20 @@ android {
     buildToolsVersion = "35.0.0"
 
     defaultConfig {
-        // 个人学习版用独立包名：两版可以同时装在一台手机上，各自的登录与数据互不干扰，
-        // 也不会出现「装了公开版把自用版覆盖掉」的情况。
+        // 公开版用独立包名：两版可以同时装在一台手机上，各自的登录与数据互不干扰，
+        // 也不会出现「装了公开版把完整版覆盖掉」的情况。
         applicationId = if (personalEdition) "com.leapcontrol.personal" else "com.leapcontrol.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 20401
-        versionName = "2.4.1"
+        versionCode = 20402
+        versionName = "2.4.2"
         resourceConfigurations += setOf("zh", "zh-rCN")
         buildConfigField("String", "AMAP_WEB_KEY_ENCRYPTED", "\"\"")
         buildConfigField("String", "PGYER_API_KEY_ENCRYPTED", "\"\"")
         // 私有仓库的只读令牌（密文）：只用于 Releases 查询与附件下载
         buildConfigField("String", "GITHUB_TOKEN_ENCRYPTED", "\"$ghTokenEncrypted\"")
         // ---- 版本分叉 ----
-        // 个人学习版：方向盘 logo、无登录标语、「我的」页恢复支持作者与开源致谢、
+        // 公开版：方向盘 logo、无登录标语、「我的」页恢复支持作者与开源致谢、
         // 使用范围改为「仅限个人学习研究使用」、更新检测指向公开仓库。
         buildConfigField("boolean", "PERSONAL_EDITION", personalEdition.toString())
         buildConfigField(
@@ -106,7 +106,7 @@ android {
             "UPDATE_REPO",
             "\"${if (personalEdition) "enjoyitxml/LeapControl-Personal-use-version" else "enjoyitxml/LeapControl"}\"",
         )
-        // 桌面图标的默认 alias：个人版只留方向盘那一个（清单里用占位符写入 enabled）
+        // 桌面图标的默认 alias：公开版只留方向盘那一个（清单里用占位符写入 enabled）
         manifestPlaceholders["officialIconEnabled"] = (!personalEdition).toString()
         manifestPlaceholders["steeringIconEnabled"] = personalEdition.toString()
         ndk {
@@ -182,7 +182,7 @@ android {
  */
 androidComponents {
     val vName = android.defaultConfig.versionName ?: "0"
-    // 个人学习版加 `-personal` 后缀：两个变体输出到同一个目录，
+    // 公开版加 `-personal` 后缀：两个变体输出到同一个目录，
     // 不区分的话第二个构建会直接覆盖第一个的产物，发错包很难发现。
     val suffix = if (personalEdition) "-personal" else ""
     onVariants(selector().withBuildType("debug")) { variant ->

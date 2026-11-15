@@ -561,7 +561,7 @@ fun PersonalizationScreen(
         // 直接摆在这里（2026-11-09 从「设置 → 高级设置」移出），不再藏在解锁开关后面。
         // 切换靠 activity-alias 换组件，桌面缓存要重启 App 才刷新。
         //
-        // 个人学习版**不出现这一段**（2026-11-15 用户要求）：那一版只有方向盘一套图标，
+        // 公开版**不出现这一段**（2026-11-15 用户要求）：那一版只有方向盘一套图标，
         // 清单里官方 alias 默认就是关的，留一个切不回去的开关只会让人困惑。
         if (!PERSONAL_EDITION) {
             SettingsSection(title = "应用图标", desc = "切换后重启生效") {
@@ -1016,8 +1016,8 @@ private const val OWNERSHIP_BACKDROP_ASPECT = 3f
 /**
  * 本项目的 GitHub 仓库地址。
  *
- * 跟着 [UPDATE_REPO] 走：自用版指私有仓库（入口隐藏、一般不展示），
- * 个人学习版指公开仓库 —— 写死任何一个都会让另一个版本链到错的地方。
+ * 跟着 [UPDATE_REPO] 走：完整版指私有仓库（入口隐藏、一般不展示），
+ * 公开版指公开仓库 —— 写死任何一个都会让另一个版本链到错的地方。
  */
 private val PROJECT_GITHUB_URL: String = "https://github.com/$UPDATE_REPO"
 
@@ -1075,7 +1075,7 @@ fun AboutScreen(
 
         Spacer(Modifier.height(12.dp))
         // 开源仓库：点一下用系统浏览器打开。
-        // 自用版隐藏（[SHOW_EXTERNAL_ENTRIES]），个人学习版必显 —— 公开项目得让人找得到源码。
+        // 完整版隐藏（[SHOW_EXTERNAL_ENTRIES]），公开版必显 —— 公开项目得让人找得到源码。
         if (SHOW_EXTERNAL_ENTRIES || PERSONAL_EDITION) {
             ClickRow(
                 title = "开源项目地址",

@@ -243,9 +243,9 @@ fun ProfileScreen(
             Spacer(Modifier.height(ITEM_GAP))
             // ---- 对外入口（两种版本口径不同）----
             //
-            // 自用版：这两项都隐藏（SHOW_EXTERNAL_ENTRIES=false），只在小圈子里用，
+            // 完整版：这两项都隐藏（SHOW_EXTERNAL_ENTRIES=false），只在小圈子里用，
             // 不把用户往 GitHub / 打赏页引。
-            // 个人学习版（[PERSONAL_EDITION]）：两项都要出现 —— 它是公开项目，
+            // 公开版（[PERSONAL_EDITION]）：两项都要出现 —— 它是公开项目，
             // 用户有权知道代码从哪来、原作者是谁，也有个正常的支持渠道（2026-11-15 用户要求）。
             if (PERSONAL_EDITION) {
                 ProfileItem(
@@ -350,7 +350,7 @@ fun ProfileScreen(
             // 2026-11-09 的折腾史：先是主题色强调卡（太抢视野）→ 改成页脚灰字（删了标题又居中，
             // 用户嫌丑）→ 现在做成与上面七条入口**同一款小卡片**，样式见 UsageNoticeCard。
             // 间距用 ITEM_GAP 而不是 14dp：它现在也是一张卡，节奏要跟上面那串保持一致。
-            // 个人学习版（[PERSONAL_EDITION]）整张卡不显示（用户 2026-11-15 要求去掉）。
+            // 公开版（[PERSONAL_EDITION]）整张卡不显示（用户 2026-11-15 要求去掉）。
             if (!PERSONAL_EDITION) {
                 Spacer(Modifier.height(ITEM_GAP))
                 UsageNoticeCard()

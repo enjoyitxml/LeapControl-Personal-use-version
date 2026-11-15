@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 
 OWNER, REPO = "enjoyitxml", "LeapControl"
-# 目标仓库 `owner/name`。默认是自用版的私有仓库；个人学习版发布时用 `--repo` 覆盖。
+# 目标仓库 `owner/name`。默认是完整版的私有仓库；公开版发布时用 `--repo` 覆盖。
 # 两个版本共用这一套脚本，别再复制一份 —— 复制出来的那份迟早只改到一边。
 REPO_FULL = f"{OWNER}/{REPO}"
 UPLOAD_HOST = "uploads.github.com"
@@ -107,7 +107,7 @@ def main() -> int:
     ap.add_argument("--notes-file", help="从文件读取 Release 说明")
     ap.add_argument("--draft", action="store_true", help="创建为草稿")
     ap.add_argument("--prerelease", action="store_true", help="标记为预发布")
-    ap.add_argument("--repo", help="目标仓库 owner/name（默认自用版私有仓库）")
+    ap.add_argument("--repo", help="目标仓库 owner/name（默认完整版私有仓库）")
     args = ap.parse_args()
 
     global REPO_FULL

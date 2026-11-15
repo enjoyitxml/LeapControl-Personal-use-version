@@ -7,9 +7,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -25,8 +28,12 @@ import com.leapcontrol.app.trip.TripSampling
 /**
  * 采样间隔选择（记录期间后台读车况的频率）。
  *
- * 2026-11-12 用户定：30 秒 / 45 秒 / 1 / 2 / 3 / 5 分钟，默认 45 秒。
+ * 2026-11-12 用户定：30 秒 / 45 秒 / 1 / 2 / 3 / 5 分钟，默认 45 秒；
+ * 2026-11-15 追加 10 秒 / 15 秒 / 20 秒三档（默认仍是 45 秒）。
  * 每一档都直接写清代价与收益，不让用户去猜「45 秒和 5 分钟差在哪」。
+ *
+ * 九档之后列表会超过一屏：选项区自己可滚，标题与底部说明留在原位 ——
+ * 否则小屏上「完成」按钮会被挤出屏幕（这个对话框的按钮是唯一出口）。
  */
 @Composable
 fun SampleIntervalDialog(
@@ -50,7 +57,12 @@ fun SampleIntervalDialog(
                     lineHeight = 17.sp,
                 )
                 Spacer(Modifier.height(12.dp))
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 336.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
                     TripSampling.INTERVALS_SEC.forEach { seconds ->
                         val selected = seconds == picked
                         Row(
@@ -86,7 +98,8 @@ fun SampleIntervalDialog(
                 }
                 Spacer(Modifier.height(10.dp))
                 Text(
-                    "默认 45 秒：车端报文约 60 秒一帧，45 秒能赶在下一帧到达前采一次。",
+                    "默认 45 秒：车端报文约 60 秒一帧，45 秒能赶在下一帧到达前采一次。" +
+                        "比它更密的档位不会让位置更准，只是新的一帧能更快被采到。",
                     color = C.textSecondary,
                     fontSize = 10.5.sp,
                     lineHeight = 15.sp,
@@ -103,10 +116,15 @@ fun SampleIntervalDialog(
 
 /** 每档一句人话，别让用户对着数字猜。 */
 private fun secondsText(seconds: Int): String = when (seconds) {
-    30 -> "最细，市区走走停停也连得上"
+    10 -> "最密，新的一帧最多晚 10 秒采到"
+    15 -> "很密，新的一帧最多晚 15 秒采到"
+    20 -> "较密，新的一帧最多晚 20 秒采到"
+    30 -> "市区走走停停也连得上"
     45 -> "推荐，与车端报文节奏接近"
     60 -> "一分钟一个点"
     120 -> "省电，短途点会稀一些"
     180 -> "很省电，适合长途巡航"
+    300 -> "最少唤醒车机"
+    // 档位表以外的值走不到这里（normalize 已经归一），留个兜底免得 when 不完整
     else -> "最少唤醒车机"
 }

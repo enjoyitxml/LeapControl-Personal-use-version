@@ -75,7 +75,7 @@ class UsageNoticeTest {
         assertTrue("SHOW_UPDATE_CHECK 应为 true", SHOW_UPDATE_CHECK)
 
         // 「我的」页两处：开源协议与致谢、意见反馈。
-        // 2026-11-15 起前者对个人学习版是**必须显示**的（`|| PERSONAL_EDITION`），
+        // 2026-11-15 起前者对公开版是**必须显示**的（`|| PERSONAL_EDITION`），
         // 所以这里不再数 `if (SHOW_EXTERNAL_ENTRIES)` 的个数，改成逐处钉开关。
         assertTrue(
             "「我的」页的开源致谢入口没接开关",
@@ -86,7 +86,7 @@ class UsageNoticeTest {
             profileSrc.contains("if (SHOW_EXTERNAL_ENTRIES) {"),
         )
         assertTrue(
-            "个人学习版没接上「支持作者」入口",
+            "公开版没接上「支持作者」入口",
             profileSrc.contains("if (PERSONAL_EDITION)"),
         )
         assertTrue("「我的」页还残留硬编码的「开源协议与致谢」", profileSrc.contains("\"开源协议与致谢\""))

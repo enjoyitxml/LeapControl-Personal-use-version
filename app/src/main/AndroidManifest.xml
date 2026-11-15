@@ -80,7 +80,7 @@
             android:screenOrientation="portrait"
             android:windowSoftInputMode="adjustResize" />
 
-        <!-- 方向盘（不带品牌标识）：个人学习版**只**保留这一个，由 gradle 占位符打开 -->
+        <!-- 方向盘（不带品牌标识）：公开版**只**保留这一个，由 gradle 占位符打开 -->
         <activity-alias
             android:name=".LauncherSteering"
             android:enabled="${steeringIconEnabled}"
@@ -97,7 +97,7 @@
 
         <!--
           默认：零跑官方 logo（与官方 App 观感一致；2026-11-09 起作为默认图标）。
-          个人学习版的构建属性会把它默认关掉（`officialIconEnabled=false`），
+          公开版的构建属性会把它默认关掉（`officialIconEnabled=false`），
           桌面图标只剩方向盘那一个，个性化里也不再提供切换入口。
         -->
         <activity-alias

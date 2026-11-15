@@ -46,23 +46,23 @@ class AppIconEntryTest {
 
     @Test
     fun `默认 alias 是零跑官方 logo`() {
-        // 2026-11-15：alias 的 enabled 改成构建占位符（个人学习版只有方向盘一套）。
-        // 自用版的默认值仍然是官方 —— 由构建脚本里的 `!personalEdition` 保证。
+        // 2026-11-15：alias 的 enabled 改成构建占位符（公开版只有方向盘一套）。
+        // 完整版的默认值仍然是官方 —— 由构建脚本里的 `!personalEdition` 保证。
         assertTrue(
-            "官方 logo 的 alias 没接占位符，个人学习版就没法把官方那套默认关掉",
+            "官方 logo 的 alias 没接占位符，公开版就没法把官方那套默认关掉",
             aliasBlock(".LauncherOfficial").contains("android:enabled=\"\${officialIconEnabled}\""),
         )
         assertTrue(
-            "方向盘 alias 没接占位符，个人学习版就没法把它默认打开",
+            "方向盘 alias 没接占位符，公开版就没法把它默认打开",
             aliasBlock(".LauncherSteering").contains("android:enabled=\"\${steeringIconEnabled}\""),
         )
         val gradle = src("app/build.gradle.kts")
         assertTrue(
-            "自用版必须让官方 alias 默认启用",
+            "完整版必须让官方 alias 默认启用",
             gradle.contains("manifestPlaceholders[\"officialIconEnabled\"] = (!personalEdition).toString()"),
         )
         assertTrue(
-            "个人学习版必须让方向盘 alias 默认启用",
+            "公开版必须让方向盘 alias 默认启用",
             gradle.contains("manifestPlaceholders[\"steeringIconEnabled\"] = personalEdition.toString()"),
         )
     }
@@ -126,7 +126,7 @@ class AppIconEntryTest {
             "个性化页必须出现「应用图标」",
             personalizationSrc.contains("SettingsSection(title = \"应用图标\""),
         )
-        // 个人学习版只有方向盘一套，这一段整段不出现（2026-11-15 用户要求）
+        // 公开版只有方向盘一套，这一段整段不出现（2026-11-15 用户要求）
         assertTrue(
             "应用图标段没按版本收起",
             personalizationSrc.contains("if (!PERSONAL_EDITION) {"),

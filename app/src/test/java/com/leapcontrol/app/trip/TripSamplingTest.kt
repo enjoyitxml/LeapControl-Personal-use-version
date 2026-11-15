@@ -9,7 +9,8 @@ import java.io.File
 /**
  * 后台采样间隔的纯逻辑 + 接线守门（2026-11-12）。
  *
- * 用户定的档位：30 秒 / 45 秒 / 1 / 2 / 3 / 5 分钟，**默认 45 秒**。
+ * 用户定的档位：10 / 15 / 20 / 30 秒、45 秒、1 / 2 / 3 / 5 分钟，**默认 45 秒**
+ * （2026-11-15 追加前三档，默认值不变）。
  * 这里钉三件事：
  *  1. 间隔归一与文案（改档位时不会出现「90 秒」这种选项外的东西）；
  *  2. 服务 + 闹钟两条链路的去重判据（同一间隔内不重复拉车况）；
@@ -32,17 +33,39 @@ class TripSamplingTest {
     // ---------------- 档位 ----------------
 
     @Test
-    fun `可选档位含 30 秒与 45 秒 默认 45 秒`() {
-        assertTrue(TripSampling.INTERVALS_SEC.contains(30))
-        assertTrue(TripSampling.INTERVALS_SEC.contains(45))
+    fun `可选档位含 10 15 20 30 45 秒 默认 45 秒`() {
+        // 顺序即界面顺序：按秒从小到大，默认那一档不在第一位，用户要能一眼找到
+        assertEquals(
+            listOf(10, 15, 20, 30, 45, 60, 120, 180, 300),
+            TripSampling.INTERVALS_SEC,
+        )
         assertEquals(45, TripSampling.DEFAULT_INTERVAL_SEC)
-        // 分钟档也都在（用户点名要的四档）
-        listOf(60, 120, 180, 300).forEach { assertTrue(TripSampling.INTERVALS_SEC.contains(it)) }
+        // 默认值必须真的在可选档位里，否则 normalize 会把它悄悄改成别的档
+        assertTrue(TripSampling.INTERVALS_SEC.contains(TripSampling.DEFAULT_INTERVAL_SEC))
+    }
+
+    @Test
+    fun `每一档都有一句人话说明`() {
+        // 界面上每档右侧的说明，漏一档就会掉进 `else ->`（「最少唤醒车机」），
+        // 于是 10 秒档显示成最省电的说法 —— 这种错只有用户看得出来
+        val dialog = codeOf("app/src/main/java/com/leapcontrol/app/ui/TripIntervalDialog.kt")
+        TripSampling.INTERVALS_SEC.forEach { seconds ->
+            assertTrue(
+                "$seconds 秒档没有自己的说明（会掉进 else 分支）",
+                dialog.contains("$seconds ->"),
+            )
+        }
     }
 
     @Test
     fun `任意数字归到最近档位`() {
-        assertEquals(30, TripSampling.normalize(10))
+        assertEquals(10, TripSampling.normalize(1))
+        assertEquals(10, TripSampling.normalize(10))
+        assertEquals(10, TripSampling.normalize(12))
+        assertEquals(15, TripSampling.normalize(13))
+        assertEquals(20, TripSampling.normalize(18))
+        assertEquals(20, TripSampling.normalize(24))
+        assertEquals(30, TripSampling.normalize(26))
         assertEquals(30, TripSampling.normalize(30))
         assertEquals(45, TripSampling.normalize(45))
         assertEquals(45, TripSampling.normalize(50))
@@ -53,6 +76,9 @@ class TripSamplingTest {
 
     @Test
     fun `文案按秒或分钟说 不出现 90 秒这种档外值`() {
+        assertEquals("10 秒", TripSampling.label(10))
+        assertEquals("15 秒", TripSampling.label(15))
+        assertEquals("20 秒", TripSampling.label(20))
         assertEquals("30 秒", TripSampling.label(30))
         assertEquals("45 秒", TripSampling.label(45))
         assertEquals("1 分钟", TripSampling.label(60))
@@ -65,9 +91,14 @@ class TripSamplingTest {
 
     @Test
     fun `间隔换算成毫秒`() {
+        assertEquals(10_000L, TripSampling.intervalMsOf(10))
+        assertEquals(15_000L, TripSampling.intervalMsOf(15))
+        assertEquals(20_000L, TripSampling.intervalMsOf(20))
         assertEquals(30_000L, TripSampling.intervalMsOf(30))
         assertEquals(45_000L, TripSampling.intervalMsOf(45))
         assertEquals(300_000L, TripSampling.intervalMsOf(300))
+        // 最短档也要远大于闹钟的 5 秒下限（scheduleNext 会 coerceAtLeast(5_000)）
+        assertTrue(TripSampling.intervalMsOf(TripSampling.INTERVALS_SEC.first()) >= 10_000L)
     }
 
     // ---------------- 去重判据 ----------------

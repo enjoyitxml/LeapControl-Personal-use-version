@@ -24,7 +24,7 @@ import java.util.concurrent.TimeUnit
  */
 object GitHubUpdate {
     /**
-     * 从哪个仓库取版本：自用版是私有仓库，个人学习版是公开仓库（见 [UPDATE_REPO]）。
+     * 从哪个仓库取版本：完整版是私有仓库，公开版是公开仓库（见 [UPDATE_REPO]）。
      *
      * 不能写死 —— 公开版如果还去查私有仓库，匿名请求一律 404，
      * 「检查更新」会永远显示失败；反过来把令牌塞进公开包更不行。
