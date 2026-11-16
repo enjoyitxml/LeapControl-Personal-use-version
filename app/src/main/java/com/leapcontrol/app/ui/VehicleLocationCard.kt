@@ -814,6 +814,9 @@ private data class ParkingPhotoSlot(val hasPhoto: Boolean, val savedAt: Long)
  * 选了 [ParkingPhotoSource.OFFICIAL] 时，第一次组合会**顺手要一次**（每次启动每辆车只试一次，
  * 见 `AppRuntime.refreshOfficialPhoto`）；本地已有这辆车的照片就不再打扰接口 ——
  * 车端照片是停车那一刻上传的，反复问同一件事只会白耗流量。
+ *
+ * 例外是**驻车拍照页**（`refreshOfficialOnEnter = true`）：那一页就是「我现在停在哪」，
+ * 一进来看到的必须是这一趟停车的照片，本地缓存里那张属于上一次停车，所以每次进入都重新取。
  */
 @Composable
 internal fun rememberParkingPhoto(
@@ -821,6 +824,13 @@ internal fun rememberParkingPhoto(
     onMessage: (String) -> Unit = {},
     /** 解码尺寸：首页卡 240 够用，找车页与拍照页给 1400（整行大图）。 */
     thumbSize: Int = 240,
+    /**
+     * 每次进入都向车辆要一次最新车端照片（驻车拍照页传 true）。
+     *
+     * 首页卡与找车页保持 false：那两个入口会跟着车况刷新反复重组，
+     * 每次重组都打一次云端就等于把「别频繁拉车况」的规矩从后门破了。
+     */
+    refreshOfficialOnEnter: Boolean = false,
 ): ParkingPhotoState {
     val context = LocalContext.current
     val latestMessage by rememberUpdatedState(onMessage)
@@ -894,11 +904,12 @@ internal fun rememberParkingPhoto(
         value = loaded
     }
 
-    // 选了车端照片、本地还没有这台车的图 → 进页面顺手要一次。
-    // 重复调用由 runtime 挡住（每辆车每次启动只自动试一次），这里不必加判断。
-    LaunchedEffect(source, vin) {
-        if (source == ParkingPhotoSource.OFFICIAL && !slot.hasPhoto) {
-            runtime.refreshOfficialPhoto(force = false)
+    // 选了车端照片 → 进页面顺手要一次。
+    // 重复调用由 runtime 挡住（每辆车每次启动只自动试一次）；驻车拍照页传了
+    // refreshOfficialOnEnter = true，那边每次进入都强制刷新一次，看的才是这一趟的照片。
+    LaunchedEffect(source, vin, refreshOfficialOnEnter) {
+        if (source == ParkingPhotoSource.OFFICIAL) {
+            runtime.refreshOfficialPhoto(force = refreshOfficialOnEnter || !slot.hasPhoto)
         }
     }
 

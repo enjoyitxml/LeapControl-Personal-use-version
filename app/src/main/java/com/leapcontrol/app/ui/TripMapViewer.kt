@@ -2,6 +2,7 @@ package com.leapcontrol.app.ui
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -13,7 +14,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -108,7 +108,12 @@ private val PICK_COLOR = Color(0xFFFFA640)
  * ## 窗口避让
  * **别再给这个 Dialog 关掉系统栏避让**（把 `decorFitsSystemWindows` 设成 false）：那个模式下窗口铺到系统手势区
  * 后面，而 `navigationBarsPadding()` 拿到的 inset 恒为 0（同 `DestinationSearch` 里记过的坑）。
- * 用默认的窗口避让，系统自己把内容区收进安全区；提示另外浮在栏上方，不许塞进栏里多占一行。
+ * 用默认的窗口避让，系统自己把内容区收进安全区。
+ *
+ * 但默认避让下 `navigationBarsPadding()` **也是 0**（内容已在安全区内，Compose 再减一次就没了），
+ * 于是「底部 8dp」在真机上就是贴着屏幕边 —— 用户反馈过「下方提示文字被手机遮挡」。
+ * 现在底部留白走 [dialogBottomGap]：读窗口根 View 的导航栏高度（未经消费的那个值），
+ * 读不到时给 32dp 兜底。提示浮层仍然钉在量出来的栏高之上，不占按钮行。
  *
  * ## 手势
  * 浏览态：单指拖动平移、双指捏合缩放（锚点下的地钉住不动，见 [TripMapCamera.zoomedBy]）。
@@ -651,8 +656,15 @@ internal fun TripMapViewer(
                         ),
                     )
                     .onSizeChanged { footerPx = it.height }
-                    .navigationBarsPadding()
-                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                    .padding(
+                        start = 14.dp,
+                        end = 14.dp,
+                        top = 8.dp,
+                        // 底部说明与屏幕底边之间要有**真实**的距离：这个全屏 Dialog 里
+                        // `navigationBarsPadding()` 拿到的是 0（原因见 DialogInsets.kt），
+                        // 只加 8dp 会让最后一行提示压在导航栏 / 手势条上（用户报过两次）。
+                        bottom = dialogBottomGap(extra = 10.dp),
+                    ),
             ) {
                 if (editing) {
                     Text(
@@ -686,6 +698,14 @@ internal fun TripMapViewer(
  *
  * 用户反馈「二级界面字体太小、按钮看不到也点不到」——这一版所有按钮统一放大，
  * 文字垂直居中，primary = 主题色实心（「按导航补齐」和「确认保存」）。
+ *
+ * 2026-11-16 再改一次配色（用户截图圈了「撤一点 / 撤销 / 按导航补齐 / 取消」说看不清）：
+ *  - 原来不可用的底色是「轨道色（20% 黑）再 `copy(alpha = 0.6f)`」。`copy` 是**替换** alpha 而不是乘，
+ *    20% 黑被改成 60% 黑，于是按钮成了深灰块；文字又只有 60% 不透明度的灰，
+ *    深灰压浅灰 —— 「撤一点」「撤销」「按导航补齐」三个全糊在一起。
+ *  - 可用的次要按钮是 90% 白，压在同样近白的标题栏上，边界完全看不出来（「取消」）。
+ * 现在：次要按钮白底 + 1dp 发丝描边定边界；不可用只降信息量、不换深色底，
+ * 文字用完整的 [AppColors.textSecondary]（不再乘 alpha）；主按钮不可用时仍留在主题色系里。
  */
 @Composable
 private fun MapChip(
@@ -696,17 +716,24 @@ private fun MapChip(
     enabled: Boolean = true,
 ) {
     val C = LocalAppColors.current
+    val shape = RoundedCornerShape(11.dp)
     val bg = when {
-        !enabled -> C.barTrack.copy(alpha = 0.6f)
-        primary -> C.accent
-        C.isDark -> Color(0xE621242B)
-        else -> Color(0xE6FFFFFF)
+        primary && enabled -> C.accent
+        // 处理中 / 还不满足条件：淡主题色，仍看得出「这是那个主操作」
+        primary -> C.accent.copy(alpha = 0.16f)
+        !enabled -> if (C.isDark) Color(0x0DFFFFFF) else Color(0x08000000)
+        C.isDark -> Color(0x1CFFFFFF)
+        else -> Color(0xFFFFFFFF)
     }
     val fg = when {
-        !enabled -> C.textSecondary.copy(alpha = 0.6f)
-        primary -> Color.White
-        else -> C.textPrimary
+        primary && enabled -> Color.White
+        primary -> C.accent
+        enabled -> C.textPrimary
+        // 不乘 alpha：灰字压灰底等于没字
+        else -> C.textSecondary
     }
+    // 次要按钮一律给出边界：白底 chip 压在近白标题栏上，没有描边就像一行裸字
+    val edge = if (primary) null else if (C.isDark) Color(0x2EFFFFFF) else Color(0x2E000000)
     Text(
         text = text,
         color = fg,
@@ -716,8 +743,9 @@ private fun MapChip(
         modifier = modifier
             .heightIn(min = 38.dp)
             .wrapContentHeight(Alignment.CenterVertically)
-            .clip(RoundedCornerShape(11.dp))
+            .clip(shape)
             .background(bg)
+            .then(edge?.let { Modifier.border(1.dp, it, shape) } ?: Modifier)
             .noRippleClickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 8.dp),
     )

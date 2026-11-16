@@ -1,6 +1,7 @@
 package com.leapcontrol.app.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -20,6 +21,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -43,6 +45,13 @@ fun PlaybookScreen(
     onBack: () -> Unit,
     /** 零记功能是否开启；关掉时最后一节「零记」不再显示。 */
     journalEnabled: Boolean = true,
+    /**
+     * 打开高德开放平台控制台（申请 Web Key 的那一步）。
+     *
+     * 这一页本来只读，但「配置高德 Key」那条教程的第三步就是去控制台建应用 ——
+     * 让人照着文字去浏览器里手敲网址，等于把最容易放弃的一步留给用户。
+     */
+    onOpenAmapConsole: () -> Unit = {},
 ) {
     val C = LocalAppColors.current
     // 小节序号由计数器给，不写死数字：零记那一节跟着总开关显隐，
@@ -121,13 +130,52 @@ fun PlaybookScreen(
                 "② 桌面小组件：长按桌面空白处 → 添加小部件 → 找到「零控」，" +
                 "4×2 摆放最合适。小组件第一行是车名和更新时间，中间是续航" +
                 "（纯电显示一行，增程分电、油两行），下面一排是解锁 / 上锁 / 空调 / 后备箱 / 鸣笛寻车五颗按键，" +
-                "点一下直接下发；正在生效的状态会亮起主题色。\n\n" +
-                "小组件有「素纸」「沉浸」两套版式，在「个性化 → 桌面小组件」里切换，" +
+                "点一下直接下发；哪项正开着，右上角那行提示会写明。\n\n" +
+                "小组件有「全透明」「素纸」「沉浸」三套版式（默认全透明），在「个性化 → 桌面小组件」里切换，" +
                 "桌面上已有的卡片会立刻跟着变，不用删掉重加。沉浸样式还能换成相册里的图。",
             tip = "小组件里的空调、后备箱按「本地记着的开合状态」取反 —— " +
                 "部分车型车况里压根不上报这两个信号，靠车况判会永远只能开不能关。" +
                 "另外：想让后台点一下就能用，记得在系统手机管家里给零控放开「自启动」和「后台弹出界面」，" +
                 "否则按了可能没反应。",
+        )
+
+        Spacer(Modifier.height(12.dp))
+
+        // 高德 Key：这一条讲两件事 —— 配它能换来什么（用户最关心），以及四步怎么申请。
+        // 教程正文与设置页的 `AmapKeyGuide` 同一套说法，只是这里不弹输入框，改成一段说明。
+        PlaybookSection(
+            no = takeNo(),
+            title = "配置高德 Key（地址与搜索）",
+            body = "先说清楚它管什么：零控里只有两件事需要 Key —— 把车辆坐标翻译成中文地址，" +
+                "以及按关键字搜目的地。地图底图是直连高德公开瓦片的，不配 Key 也能看，" +
+                "只是地址位置只写经纬度。\n\n" +
+                "配好之后可以：\n" +
+                "① 找车页那张地图下面直接写出中文地址，车停在哪条街、哪个院一眼看到；\n" +
+                "② 「导航到车辆」一步到位，步行 / 骑行 / 驾车自己选；\n" +
+                "③ 按关键字搜全国的地点、停车场、充电站，选中就发给车机；\n" +
+                "④ 手机和车机登录同一个高德账号，选好目的地再上车，车机会提示继续导航。\n\n" +
+                "申请只要三分钟，免费，建议用电脑：\n" +
+                "① 打开高德开放平台控制台，手机号或支付宝登录，顺手做完个人实名认证" +
+                "（免费额度要认证之后才发放）；\n" +
+                "② 左侧「应用管理 → 我的应用 → 创建新应用」，名字随便写、类型选「出行」；\n" +
+                "③ 进这个应用点「添加 Key」，服务平台选「Web 服务」（千万别选 Android）；\n" +
+                "④ 提交后拿到一串 32 位字符，就是 Key —— 回「设置 → 地图与目的地 → 高德 Web Key」" +
+                "粘进去保存，地址会自己刷新。",
+            tip = "最容易踩的坑是把 Key 的服务平台选成「Android」：那个要绑包名和签名指纹，" +
+                "填进零控一定用不了（报无权限 / 域名不匹配）。" +
+                "配好之后地址还只显示经纬度，先去找车页右上角刷新一次。",
+            action = {
+                Text(
+                    "打开高德开放平台控制台",
+                    color = C.accent,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { onOpenAmapConsole() }
+                        .padding(horizontal = 2.dp, vertical = 5.dp),
+                )
+            },
         )
 
         Spacer(Modifier.height(12.dp))
@@ -212,6 +260,8 @@ private fun PlaybookSection(
     title: String,
     body: String,
     tip: String? = null,
+    /** 正文下面可选的一颗文字按钮（目前只有「配置高德 Key」那条用来打开控制台）。 */
+    action: (@Composable () -> Unit)? = null,
 ) {
     val C = LocalAppColors.current
     SettingsCard {
@@ -245,6 +295,10 @@ private fun PlaybookSection(
             fontSize = 12.sp,
             lineHeight = 19.sp,
         )
+        if (action != null) {
+            Spacer(Modifier.height(10.dp))
+            action()
+        }
         if (tip != null) {
             Spacer(Modifier.height(10.dp))
             Row(

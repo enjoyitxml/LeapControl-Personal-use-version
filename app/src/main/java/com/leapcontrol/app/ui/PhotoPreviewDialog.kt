@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -300,16 +299,18 @@ internal fun PhotoPreviewDialog(
                 )
             }
 
-            // 首次进来给一句操作提示：不写的话「能双指缩放」只能靠试出来
+            // 首次进来给一句操作提示：不写的话「能双指缩放」只能靠试出来。
+            // 离底边的高度走 dialogBottomGap：这一页自己踩过「提示下半截压在导航栏里」的坑，
+            // 固定 dp 在不同导航方式下都不对（见 DialogInsets.kt）。
             if (!zoomed) {
                 Text(
                     text = "双指缩放 · 双击放大",
                     color = Color.White.copy(alpha = 0.55f),
                     fontSize = 12.sp,
+                    lineHeight = 17.sp,
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .navigationBarsPadding()
-                        .padding(bottom = 30.dp),
+                        .padding(bottom = dialogBottomGap(extra = 16.dp)),
                 )
             }
 

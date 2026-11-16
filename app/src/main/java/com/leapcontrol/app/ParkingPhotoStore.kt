@@ -3,6 +3,7 @@ package com.leapcontrol.app
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import com.leapcontrol.app.trip.TripFormat
 import java.io.File
 import java.util.Locale
 
@@ -122,21 +123,33 @@ object ParkingPhotoRules {
     }
 
     /**
-     * 「拍摄于 12 分钟前」—— 驻车拍照页用的说法。
+     * 驻车拍照页那行时间：**具体几点**，不是「多久之前」。
      *
-     * 那一页标题就叫「驻车拍照」、图就在正中间，「车位已拍照」是重复一遍已知的事；
-     * 用户真正想知道的是**这张是什么时候拍的**（停了一夜还是刚停，决定要不要重拍）。
-     * 时间读不到（文件 mtime 丢失）时返回 null，调用方退回一句中性文案，不编假时间。
+     * 用户明确要求这一页要写「驻车的时间」——「12 分钟前」得自己换算，而站在地库里
+     * 他真正要比对的是「这趟停的是不是刚才那一趟」。所以给绝对时刻，后面再缀一个相对时长，
+     * 既知道几点停的，也一眼看出停了一夜还是刚停下。
+     *
+     *  - 手机方案：快门时间（这张是用户自己按的，就是拍照时间）；
+     *  - 车端方案：车辆上报的停车 / 上传时间（不是我们取回的时刻，否则「3 天前停的车」会显示成刚刚）。
+     *
+     * 时间读不到（文件 mtime 丢失 / 接口没给 uploadTime）时返回 null，调用方退回一句中性文案，
+     * 绝不编一个假时间。
      */
-    fun takenAt(hasPhoto: Boolean, savedAt: Long, now: Long): String? {
+    fun parkedAt(
+        source: ParkingPhotoSource,
+        hasPhoto: Boolean,
+        savedAt: Long,
+        now: Long,
+    ): String? {
         if (!hasPhoto) return null
         if (savedAt <= 0L || savedAt > now) return null
-        val ageMs = now - savedAt
-        // 一分钟内说「刚刚拍摄」而不是「拍摄于 刚刚」—— 后者读起来像病句。
-        // 这个 60 秒与 [VehicleLocationRules.ageText] 的第一个分界一致。
-        if (ageMs < 60_000L) return "刚刚拍摄"
-        val age = VehicleLocationRules.ageText(ageMs) ?: return null
-        return String.format(Locale.CHINA, "拍摄于 %s", age)
+        val label = when (source) {
+            ParkingPhotoSource.PHONE -> "拍照时间"
+            ParkingPhotoSource.OFFICIAL -> "驻车时间"
+        }
+        val absolute = TripFormat.dayTime(savedAt, now)
+        val age = VehicleLocationRules.ageText(now - savedAt)
+        return if (age == null) "$label $absolute" else "$label $absolute · $age"
     }
 
     // ---- 两种来源共用的说法 ----
@@ -168,20 +181,5 @@ object ParkingPhotoRules {
         val ageMs = if (savedAt > 0L && savedAt <= now) now - savedAt else null
         val age = VehicleLocationRules.ageText(ageMs) ?: return "车端照片"
         return String.format(Locale.CHINA, "车端照片 · %s", age)
-    }
-
-    /**
-     * 详情页的「拍摄于 x 前」在车端方案下换成「车辆上传于 x 前」。
-     *
-     * 「拍摄」对用户意味着自己按了快门；车端这张是车辆自己拍的，
-     * 用「上传」才说得清它是怎么来的，也提醒了这张图的时效性。
-     */
-    fun officialTakenAt(hasPhoto: Boolean, uploadTime: Long, now: Long): String? {
-        if (!hasPhoto) return null
-        if (uploadTime <= 0L || uploadTime > now) return null
-        val ageMs = now - uploadTime
-        if (ageMs < 60_000L) return "刚刚由车辆上传"
-        val age = VehicleLocationRules.ageText(ageMs) ?: return null
-        return String.format(Locale.CHINA, "车辆上传于 %s", age)
     }
 }

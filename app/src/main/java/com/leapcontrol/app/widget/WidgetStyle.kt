@@ -10,6 +10,7 @@ import android.content.res.Configuration
  * - [STYLE_A] 素纸：浅色卡 + 发丝分隔线，最像系统自带小组件；
  * - [STYLE_D] 沉浸：图上铺字，下半部分压暗，按键是半透明白玻璃；
  * - [STYLE_T] 全透明：没有卡片底，字和按键直接浮在壁纸上，字色与控件色可自己调。
+ *   **默认就是它**（2026-11-16 用户定稿，见 [DEFAULT_STYLE]）。
  *
  * 三个布局是三份独立的 RemoteViews XML，不是同一份布局加开关：
  * 标准小组件只能组合基础控件，靠 visibility 切换做不出几种完全不同的结构。
@@ -36,18 +37,34 @@ object WidgetStyle {
 
     val ALL = listOf(STYLE_A, STYLE_D, STYLE_T)
 
+    /**
+     * 默认版式：**全透明**（2026-11-16 用户定稿）。
+     *
+     * 素纸与沉浸都自带一层卡片底，而用户要的是「字和按键直接浮在壁纸上」。
+     * 配套的两条默认值一起改：按键默认不带底色（[cellBgVisible]）、分隔线仍默认显示
+     * —— 全透明版式里那四条细线是唯一还看得出「这是五个按键」的边界。
+     *
+     * 三套版式在设置页里的排列顺序（[ALL]）不动：顺序是「素纸 → 沉浸 → 全透明」，
+     * 默认选中第三张，用户扫一眼就知道自己现在用的是哪套。
+     */
+    const val DEFAULT_STYLE = STYLE_T
+
     const val WALLPAPER_DEFAULT = "default"
     const val WALLPAPER_CUSTOM = "custom"
 
     /**
-     * 透明主题的默认字色：白色 + 文字阴影，深壁纸上是最好读的一套。
+     * 透明主题的默认字色与默认控件色：**都是白色**（2026-11-16 用户定稿）。
      *
-     * 默认控件色**不能也是白的** —— 控件色负责「按键生效时的亮色」，
-     * 跟字色一样的话，解锁 / 空调开着时按键根本看不出变化。所以给零控绿，
-     * 白字 + 绿高亮跟沉浸样式的层次是一致的；浅壁纸的用户自己换成深色即可。
+     * 全透明版式默认浮在任何壁纸上，白色 + 文字阴影是最稳的一套；
+     * 控件色（按键图标常态 / 分隔线 / 提示高亮）跟着也用白，整张卡只有一种颜色，
+     * 干净、也不用先想「绿配深壁纸还是浅壁纸」。
+     *
+     * 代价要知道：按键生效时的高亮也是白的，跟常态同一色 —— 于是「哪个键正开着」
+     * 不再靠图标变色区分，而是看右上角那句提示（「车辆已解锁 / 空调已开启」）。
+     * 想要绿高亮的人自己去「个性化 → 桌面小组件 → 颜色与背景 → 控件颜色」换。
      */
     const val DEFAULT_INK = 0xFFFFFFFF.toInt()
-    const val DEFAULT_CTRL = 0xFF3DD68C.toInt()
+    const val DEFAULT_CTRL = 0xFFFFFFFF.toInt()
 
     /** 三套版式的默认提示高亮色：与按键生效时的主色同源，没设过就用它们。 */
     const val DEFAULT_HIGHLIGHT_LIGHT = 0xFF1FA45B.toInt()
@@ -67,6 +84,18 @@ object WidgetStyle {
     private const val KEY_HIGHLIGHT = "highlight"
     private const val KEY_CELL_BG = "cell_bg"
     private const val KEY_DIVIDER = "divider"
+    /** 左上角车标是否显示（2026-11-16）。 */
+    private const val KEY_LOGO_VISIBLE = "logo_visible"
+    /**
+     * 「默认版式改成全透明、按键默认不带底色、车标默认不显示」的一次性迁移标记。
+     *
+     * 光改默认常量对老设备无效：装过旧版的机器 prefs 里已经写着 `style="a"`、
+     * `cell_bg=true`，升级后卡片依旧是素纸 + 带底的按键，看起来就像这次改动没做进去。
+     * 所以第一次读外观设置时强制写成新默认一次并落标记，之后完全尊重用户自己的选择
+     * （用户手动改回素纸 / 打开按键底 / 打开车标，就再也不动它）。与首页
+     * 「蓝牙钥匙图标默认隐藏」是同一套做法（见 `AppRuntime` 里的 `KEY_BLE_ICON_MIGRATED`）。
+     */
+    private const val KEY_DEFAULTS_V2 = "defaults_clear_v2"
     private const val KEY_INFO_SCALE = "info_scale"
     /** 五个控车图标的独立微调倍率（2026-11-13）。 */
     private const val KEY_ICON_SCALE = "icon_scale"
@@ -116,13 +145,33 @@ object WidgetStyle {
         (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
             Configuration.UI_MODE_NIGHT_YES
 
+    /**
+     * 把老设备上「旧默认值」写成新的一套（**只做一次**，之后不再覆盖）。
+     *
+     * 返回 true 表示这一次刚迁移完。增量更新的判据不直接用它，而是看
+     * [VehicleWidget.render] 里的 `lastFullStyle`：版式换了就是换了一份布局，
+     * 打成增量的那一帧桌面按 id 找不到视图会整帧丢掉，所以必须退回全量。
+     */
+    internal fun applyNewDefaults(context: Context): Boolean {
+        val sp = prefs(context)
+        if (sp.getBoolean(KEY_DEFAULTS_V2, false)) return false
+        sp.edit()
+            .putString(KEY_STYLE, DEFAULT_STYLE)
+            .putBoolean(KEY_CELL_BG, false)
+            .putBoolean(KEY_LOGO_VISIBLE, false)
+            .putBoolean(KEY_DEFAULTS_V2, true)
+            .apply()
+        return true
+    }
+
     fun style(context: Context): String {
-        val value = prefs(context).getString(KEY_STYLE, STYLE_A)
-        return if (value in ALL) value!! else STYLE_A
+        applyNewDefaults(context)
+        val value = prefs(context).getString(KEY_STYLE, DEFAULT_STYLE)
+        return if (value in ALL) value!! else DEFAULT_STYLE
     }
 
     fun setStyle(context: Context, value: String) {
-        val safe = if (value in ALL) value else STYLE_A
+        val safe = if (value in ALL) value else DEFAULT_STYLE
         prefs(context).edit().putString(KEY_STYLE, safe).apply()
     }
 
@@ -140,22 +189,45 @@ object WidgetStyle {
      * 关掉后按键只剩图标，中间那条竖线也就没有「分组」的意思了 —— 两者互相独立，
      * 用户可以只留底色、只留线，也可以两样都不要（最干净的一套）。
      *
-     * 默认开：**新增键必须给 true 兜底**，否则老用户升级后按键突然全裸，
-     * 会以为是自己误触了什么。（新增键不存在时读到默认值，不需要一次性迁移标记。）
+     * **默认关**（2026-11-16 用户定稿）：默认版式是全透明，按键再压一层玻璃底
+     * 就跟壁纸糊在一起了；关着只剩图标 + 细线，最贴近「浮在壁纸上」。
+     * 老设备的那份 true 由 [applyNewDefaults] 一次性改掉，之后完全听用户的。
      */
-    fun cellBgVisible(context: Context): Boolean =
-        prefs(context).getBoolean(KEY_CELL_BG, true)
+    fun cellBgVisible(context: Context): Boolean {
+        applyNewDefaults(context)
+        return prefs(context).getBoolean(KEY_CELL_BG, false)
+    }
 
     fun setCellBgVisible(context: Context, visible: Boolean) {
         prefs(context).edit().putBoolean(KEY_CELL_BG, visible).apply()
     }
 
-    /** 按键之间的四条竖向发丝线。默认开。 */
+    /** 按键之间的四条竖向发丝线。默认开（全透明版式里靠它分出五个按键）。 */
     fun dividersVisible(context: Context): Boolean =
         prefs(context).getBoolean(KEY_DIVIDER, true)
 
     fun setDividersVisible(context: Context, visible: Boolean) {
         prefs(context).edit().putBoolean(KEY_DIVIDER, visible).apply()
+    }
+
+    /**
+     * 左上角车标是否显示（2026-11-16 用户定稿：**默认不显示**）。
+     *
+     * 默认不显示：全透明版式本来就讲究「字直接浮在壁纸上」，车名前面再压一枚车标
+     * 只会多一块视觉噪音；要用的人自己去个性化里打开。
+     * 关掉后车标格整块 `GONE`（不占位），车名往左移到原来车标的左缘 ——
+     * 那一格 18dp + 1dp 间距正好让给车名，不会在行首留一段空白。
+     *
+     * 老设备 prefs 里没有这个键，但新装默认就是关，所以由 [applyNewDefaults]
+     * 跟着一起落一次标记，之后完全听用户的（打开过一次就再也不动它）。
+     */
+    fun logoVisible(context: Context): Boolean {
+        applyNewDefaults(context)
+        return prefs(context).getBoolean(KEY_LOGO_VISIBLE, false)
+    }
+
+    fun setLogoVisible(context: Context, visible: Boolean) {
+        prefs(context).edit().putBoolean(KEY_LOGO_VISIBLE, visible).apply()
     }
 
     // ---- 信息区大小 ----
@@ -208,7 +280,7 @@ object WidgetStyle {
     }
 
     /**
-     * 左上角车标（零跑 V 标）的大小倍率。
+     * 左上角车标的大小倍率（开关见 [logoVisible]）。
      *
      * 与上面两根同一档范围、同一份默认值：老设备 prefs 里没有这个键，
      * 读不到就落回 1.0，升级后卡片一模一样，不配一次性迁移标记。

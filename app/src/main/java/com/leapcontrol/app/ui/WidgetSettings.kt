@@ -70,7 +70,7 @@ import kotlin.math.roundToInt
 /**
  * 「个性化 → 桌面小组件」。
  *
- * 两套版式（素纸 / 沉浸）是两份独立的 RemoteViews 布局，选了立刻重画桌面上已有的卡片；
+ * 三套版式（素纸 / 沉浸 / 全透明，默认全透明）是三份独立的 RemoteViews 布局，选了立刻重画桌面上已有的卡片；
  * 沉浸样式额外给一个背景图入口 —— 素纸那张卡没有「底图」这个概念，选了也没用，所以只在 D 下出现。
  *
  * 缩略图是**示意图**不是真实渲染：真正的卡片要由桌面进程用 RemoteViews 画出来，
@@ -97,6 +97,8 @@ fun WidgetSettingsGroup() {
     // 按键的两个外观开关：底色与分隔线互相独立，都存 prefs，回来时回读一次
     var cellBg by remember { mutableStateOf(WidgetStyle.cellBgVisible(context)) }
     var dividers by remember { mutableStateOf(WidgetStyle.dividersVisible(context)) }
+    // 左上角车标显隐（2026-11-16）：关掉后车名往左占满那一行
+    var logoVisible by remember { mutableStateOf(WidgetStyle.logoVisible(context)) }
     // 信息区大小（字号 + 进度条粗细共用这一个倍率）：拖动时只更新本地 + 写 prefs，
     // 松手才整卡重画（全量重绘在沉浸样式下会让桌面重新解码一次壁纸，跟着手指每帧重画会卡）
     var infoScale by remember { mutableFloatStateOf(WidgetStyle.infoScale(context)) }
@@ -144,6 +146,7 @@ fun WidgetSettingsGroup() {
         buttonSummary = buttonSummary,
         cellBg = cellBg,
         dividers = dividers,
+        logoVisible = logoVisible,
         infoScale = infoScale,
         iconScale = iconScale,
         headerScale = headerScale,
@@ -158,6 +161,12 @@ fun WidgetSettingsGroup() {
         onToggleDividers = { on ->
             dividers = on
             WidgetStyle.setDividersVisible(context, on)
+            VehicleWidget.render(context)
+        },
+        onToggleLogo = { on ->
+            logoVisible = on
+            WidgetStyle.setLogoVisible(context, on)
+            // 显隐用 GONE 改的是布局结构（车名要跟着左移），增量更新碰不到
             VehicleWidget.render(context)
         },
         onChangeInfoScale = { v ->
@@ -257,6 +266,7 @@ private fun WidgetSection(
     buttonSummary: String,
     cellBg: Boolean,
     dividers: Boolean,
+    logoVisible: Boolean,
     infoScale: Float,
     iconScale: Float,
     headerScale: Float,
@@ -264,6 +274,7 @@ private fun WidgetSection(
     onOpenButtons: () -> Unit,
     onToggleCellBg: (Boolean) -> Unit,
     onToggleDividers: (Boolean) -> Unit,
+    onToggleLogo: (Boolean) -> Unit,
     onChangeInfoScale: (Float) -> Unit,
     onChangeIconScale: (Float) -> Unit,
     onChangeHeaderScale: (Float) -> Unit,
@@ -373,7 +384,12 @@ private fun WidgetSection(
             )
 
             Spacer(Modifier.height(14.dp))
-            WidgetFinePreview(iconScale = iconScale, headerScale = headerScale, logoScale = logoScale)
+            WidgetFinePreview(
+                iconScale = iconScale,
+                headerScale = headerScale,
+                logoScale = logoScale,
+                logoVisible = logoVisible,
+            )
             Spacer(Modifier.height(10.dp))
             WidgetSliderRow(
                 label = "控车图标大小",
@@ -398,17 +414,33 @@ private fun WidgetSection(
                 onCommit = onCommitSize,
             )
             Spacer(Modifier.height(6.dp))
-            WidgetSliderRow(
-                label = "左上角车标大小",
-                desc = "车名前面那个零跑车标单独放大缩小。它的左缘固定不动（车名不会被推走），" +
-                    "字号和其它按键都不受影响。",
-                value = logoScale,
-                range = WidgetStyle.MIN_FINE_SCALE..WidgetStyle.MAX_FINE_SCALE,
-                steps = 8,
-                display = "${(logoScale * 100).roundToInt()}%",
-                onChange = onChangeLogoScale,
-                onCommit = onCommitSize,
+            // 车标的显隐与大小放在一起：关掉之后那根「车标大小」滑杆就没有对象了，
+            // 所以直接收起来，换成一句说明 —— 留着一根拖了没反应的滑杆比不显示更糟。
+            // 默认关着（2026-11-16 用户定稿），要用的人自己打开。
+            SwitchRow(
+                label = "显示车标",
+                desc = if (logoVisible) {
+                    "车名前面那个车标。关掉后车名向左占满这一行，行首不留空档。"
+                } else {
+                    "默认不显示。打开后车名前面会出现一枚车标，车名相应往右让位。"
+                },
+                checked = logoVisible,
+                onCheckedChange = onToggleLogo,
             )
+            if (logoVisible) {
+                Spacer(Modifier.height(6.dp))
+                WidgetSliderRow(
+                    label = "左上角车标大小",
+                    desc = "车名前面那个车标单独放大缩小。它的左缘固定不动（车名不会被推走），" +
+                        "字号和其它按键都不受影响。",
+                    value = logoScale,
+                    range = WidgetStyle.MIN_FINE_SCALE..WidgetStyle.MAX_FINE_SCALE,
+                    steps = 8,
+                    display = "${(logoScale * 100).roundToInt()}%",
+                    onChange = onChangeLogoScale,
+                    onCommit = onCommitSize,
+                )
+            }
             Spacer(Modifier.height(8.dp))
             Text(
                 "恢复默认大小",
@@ -462,7 +494,8 @@ private fun WidgetSection(
                 Spacer(Modifier.height(14.dp))
                 WidgetColorRow(
                     title = "控件颜色",
-                    desc = "按键按下生效时的亮色，以及按键之间的分隔线。",
+                    desc = "五个按键的图标、按键之间的分隔线，以及按键生效时的高亮。" +
+                        "默认是白色（和字色一致）；想一眼看出「哪个键正开着」，换成绿或橙更醒目。",
                     color = ctrl,
                     onPick = onPickCtrl,
                 )
@@ -712,14 +745,20 @@ private fun WidgetStyleThumb(
     }
 }
 
-/** 透明底纹：8dp 方格交替，两色都取自当前主题，深浅色模式下都不刺眼。 */
+/**
+ * 透明底纹：8dp 方格交替。
+ *
+ * 用**中性灰**而不是面板色：全透明版式的默认字色是白色，白字块压在白面板上
+ * 等于没画 —— 而「全透明」现在是默认选中那一张，缩略图必须一眼看得出是透明底、
+ * 字和按键浮在上面。两档灰在深浅色模式下都够淡，不抢缩略图里那些示意色块。
+ */
 @Composable
 private fun CheckerBoard(modifier: Modifier = Modifier) {
     val C = LocalAppColors.current
     Canvas(modifier = modifier) {
         val cell = 8.dp.toPx()
-        val light = C.panelBg
-        val dark = C.border.copy(alpha = 0.55f)
+        val light = if (C.isDark) Color(0xFF2C3037) else Color(0xFFE7E9ED)
+        val dark = if (C.isDark) Color(0xFF353A42) else Color(0xFFD2D5DB)
         var y = 0f
         var row = 0
         while (y < size.height) {
@@ -759,7 +798,12 @@ private fun Bar(width: Dp, height: Dp, color: Color) {
  * 刷新键格、五个按键格的边框都描出来：拖滑杆时只有里面的方块/文字在长，框一直不动。
  */
 @Composable
-private fun WidgetFinePreview(iconScale: Float, headerScale: Float, logoScale: Float) {
+private fun WidgetFinePreview(
+    iconScale: Float,
+    headerScale: Float,
+    logoScale: Float,
+    logoVisible: Boolean,
+) {
     val C = LocalAppColors.current
     // 与真机同一份换算：刷新键图形 = 20dp 格子 − 2 × 内边距
     val refreshGraphic = WidgetMetrics.iconGraphicDp(
@@ -778,27 +822,30 @@ private fun WidgetFinePreview(iconScale: Float, headerScale: Float, logoScale: F
             .background(C.panelBg)
             .padding(horizontal = 10.dp, vertical = 8.dp),
     ) {
-        // 标题行：左边车标（框 18dp 不动，图形按倍率长、左缘贴框），右边时间 + 刷新键
+        // 标题行：左边车标（框 18dp 不动，图形按倍率长、左缘贴框），右边时间 + 刷新键。
+        // 车标关掉时整格都不画，车名像真机一样往左顶到头 —— 示意图要能看出这一下位移。
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(20.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(
-                modifier = Modifier
-                    .size(WidgetMetrics.LOGO_BOX_DP.dp)
-                    .border(0.6.dp, C.border, RoundedCornerShape(4.dp)),
-                contentAlignment = Alignment.CenterStart,
-            ) {
+            if (logoVisible) {
                 Box(
                     modifier = Modifier
-                        .size(logoGraphic.dp)
-                        .clip(RoundedCornerShape(1.dp))
-                        .background(C.accent.copy(alpha = 0.85f)),
-                )
+                        .size(WidgetMetrics.LOGO_BOX_DP.dp)
+                        .border(0.6.dp, C.border, RoundedCornerShape(4.dp)),
+                    contentAlignment = Alignment.CenterStart,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(logoGraphic.dp)
+                            .clip(RoundedCornerShape(1.dp))
+                            .background(C.accent.copy(alpha = 0.85f)),
+                    )
+                }
+                Spacer(Modifier.width(4.dp))
             }
-            Spacer(Modifier.width(4.dp))
             Text(
                 text = DEFAULT_VEHICLE_TITLE,
                 color = C.textPrimary,

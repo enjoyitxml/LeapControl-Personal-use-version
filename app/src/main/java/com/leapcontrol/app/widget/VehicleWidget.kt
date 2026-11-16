@@ -37,10 +37,11 @@ import java.util.Locale
  * 澎湃 / MIUI 的「原生小部件」是小米私有体系，要求上架小米应用商店并申请白名单，
  * 侧载包走不通，所以用系统 AppWidgetProvider，视觉自己做。
  *
- * ## 两套版式
+ * ## 三套版式（默认全透明，见 [WidgetStyle.DEFAULT_STYLE]）
  * 用户在「个性化 → 桌面小组件」里选，见 [WidgetStyle]：
  * - **A 素纸**：浅色卡 + 发丝分隔线，字色跟系统深浅走；
- * - **D 沉浸**：一张图铺满，下半部分压暗，按键是白玻璃，字色恒为白。
+ * - **D 沉浸**：一张图铺满，下半部分压暗，按键是白玻璃，字色恒为白；
+ * - **T 全透明**：没有卡片底，字与按键直接浮在壁纸上（默认）。
  * （早先还有一版「色块」，用户否决后已删除。）
  *
  * ## 两种尺寸
@@ -291,6 +292,17 @@ object VehicleWidget {
     @Volatile
     private var lastFullNight: Boolean? = null
 
+    /**
+     * 上一次**全量**渲染时用的版式。
+     *
+     * 与 [lastFullNight] 同一个道理：增量更新只能打在**同一份布局**上，
+     * 换了版式（素纸 / 沉浸 / 全透明是三份独立 XML）之后再来一帧增量，
+     * 桌面按 id 找不到对应视图，整帧被丢掉 —— 卡片会卡在旧车况上，
+     * 直到下一次全量更新。null（本进程还没全量画过）同样强制全量。
+     */
+    @Volatile
+    private var lastFullStyle: String? = null
+
     // ---------------- 对外入口 ----------------
 
     /**
@@ -359,8 +371,10 @@ object VehicleWidget {
         // 增量更新不碰背景，所以三种情况必须退回全量：
         // ① 调用方要的就是全量；② 系统深浅色变了（背景色在静态部分）；
         // ③ 这个进程里还没全量画过（`lastFullNight == null`），桌面上可能是一张空卡。
+        // 2026-11-16 再加一条：版式变了（含「默认值一次性迁移」把素纸换成全透明）。
         val night = WidgetStyle.isNight(context)
-        val usePartial = partial && lastFullNight == night
+        val style = WidgetStyle.style(context)
+        val usePartial = partial && lastFullNight == night && lastFullStyle == style
         byProvider.forEach { (wide, ids) ->
             ids.forEach { id ->
                 val (widthDp, heightDp) = widgetSize(manager, id)
@@ -409,6 +423,7 @@ object VehicleWidget {
                             ),
                         )
                         lastFullNight = night
+                        lastFullStyle = style
                     }
                 }
             }
@@ -695,11 +710,19 @@ object VehicleWidget {
         // 矢量 Drawable 跨进程交给桌面进程后，`setColorFilter` 在部分桌面上不生效，
         // 图形就保持自身的黑色 —— 深色版式 / 玻璃版式的卡片上等于没画（2026-11-15 用户反馈
         // 「公开版小组件不显示 logo」）。PNG 与 [R.drawable.ic_leap_logo] 走同一条已知可用的染色链路。
-        views.setImageViewResource(
-            R.id.wg_logo,
-            if (PERSONAL_EDITION) R.drawable.ic_widget_logo_steering else R.drawable.ic_leap_logo,
-        )
-        views.setInt(R.id.wg_logo, "setColorFilter", p.ink)
+        //
+        // 2026-11-16：用户在个性化里可以把这个车标整个关掉。关掉用 `GONE`（不占位），
+        // 车名顺势往左挪 18dp + 1dp 贴住原来的左缘 —— 用 `INVISIBLE` 会留下一条空档。
+        // 关掉时连图与染色都不用设：`GONE` 的视图不参与绘制，重新打开走的是全量重画。
+        val logoVisible = WidgetStyle.logoVisible(context)
+        views.setViewVisibility(R.id.wg_logo, if (logoVisible) View.VISIBLE else View.GONE)
+        if (logoVisible) {
+            views.setImageViewResource(
+                R.id.wg_logo,
+                if (PERSONAL_EDITION) R.drawable.ic_widget_logo_steering else R.drawable.ic_leap_logo,
+            )
+            views.setInt(R.id.wg_logo, "setColorFilter", p.ink)
+        }
 
         // ---- 五个按键：静态部分 ----
         // 槽位 id / 图标 id 按位置固定（六份布局一致），图标、广播 action、中文标签按当前配置取。
@@ -1266,7 +1289,7 @@ object VehicleWidget {
     }
 
     /**
-     * 左上角车标（零跑 V 标）的大小微调。
+     * 左上角车标的大小微调（公开版是方向盘，完整版是车标本身）。
      *
      * 与按键图标、刷新键同一套办法：**格子固定 18dp**（六份布局写死），只收放四边留白，
      * 让 `fitCenter` 画出 11.2~17.5dp 的图形。1.0 时留白 0/2/4/2，图形正好 14dp、

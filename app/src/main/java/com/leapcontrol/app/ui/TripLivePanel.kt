@@ -232,9 +232,15 @@ fun TripLivePanel(
         // 首页小卡要精简（设计方案 A：口径说明只在二级页出现），这句留在二级页就够了。
         if (!compact) {
             Spacer(Modifier.height(6.dp))
+            // 括号里是**钟点**，不是时长：2026-11-16 用户截图里出现了「最近 498552:21:53」——
+            // 把 epoch 毫秒喂给了 [TripFormat.clock]（那是给「已记录」用的时长格式，
+            // 会把它当毫秒数换算成小时）。钟点一律走 [TripFormat.time]，
+            // 与上面「刚刚采样 / 最近采样」和结束确认框同一口径。
+            val lastSample = live.lastAt.takeIf { it > 0L }?.let { TripFormat.time(it) }
             Text(
                 text = "后台每 ${TripSampling.label(sampleIntervalSec)}读一次车况并记点" +
-                    "（最近 ${TripFormat.clock(live.lastAt)}）。结束后才进入历史清单；" +
+                    (lastSample?.let { "（最近 $it）" } ?: "（还没采到第一个点）") +
+                    "。结束后才进入历史清单；" +
                     "锁车或停稳约 5 分钟后也会自动收尾。",
                 color = C.textSecondary,
                 fontSize = 10.sp,

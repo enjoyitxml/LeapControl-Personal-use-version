@@ -2,6 +2,7 @@ package com.leapcontrol.app
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -55,30 +56,61 @@ class ParkingPhotoRulesTest {
     private fun captionAgo(ageMs: Long): String? =
         ParkingPhotoRules.caption(hasPhoto = true, savedAt = now - ageMs, now = now)
 
-    // ---- 驻车拍照页的「拍摄于 x 前」 ----
+    // ---- 驻车拍照页的「驻车时间 / 拍照时间」 ----
 
     @Test
-    fun `驻车页没有照片不返回拍摄时间`() {
-        assertNull(ParkingPhotoRules.takenAt(hasPhoto = false, savedAt = now - 60_000L, now = now))
-    }
-
-    @Test
-    fun `驻车页按分钟小时天换算拍摄时间`() {
-        assertEquals("刚刚拍摄", takenAgo(30_000L))
-        assertEquals("拍摄于 12 分钟前", takenAgo(12 * 60_000L))
-        assertEquals("拍摄于 2 小时前", takenAgo(2 * 3_600_000L))
-        assertEquals("拍摄于 3 天前", takenAgo(3 * 86_400_000L))
-    }
-
-    /** mtime 丢失或时间在未来：返回 null，由界面退回一句中性文案，不编一个假的「刚刚」。 */
-    @Test
-    fun `驻车页时间读不到或在未来时返回 null`() {
-        assertNull(ParkingPhotoRules.takenAt(hasPhoto = true, savedAt = 0L, now = now))
+    fun `驻车页没有照片不返回时间`() {
         assertNull(
-            ParkingPhotoRules.takenAt(hasPhoto = true, savedAt = now + 60_000L, now = now),
+            ParkingPhotoRules.parkedAt(
+                ParkingPhotoSource.PHONE,
+                hasPhoto = false,
+                savedAt = now - 60_000L,
+                now = now,
+            ),
         )
     }
 
-    private fun takenAgo(ageMs: Long): String? =
-        ParkingPhotoRules.takenAt(hasPhoto = true, savedAt = now - ageMs, now = now)
+    /**
+     * 用户要的是**几点停的**（「12 分钟前」得自己换算），所以这行必须是绝对时刻，
+     * 相对时长只做后缀。手机方案说「拍照时间」，车端方案说「驻车时间」。
+     */
+    @Test
+    fun `驻车页给具体时刻并区分拍照与驻车`() {
+        val text = ParkingPhotoRules.parkedAt(
+            ParkingPhotoSource.PHONE,
+            hasPhoto = true,
+            savedAt = now - 12 * 60_000L,
+            now = now,
+        )
+        assertTrue("手机方案要说「拍照时间」", text!!.startsWith("拍照时间 "))
+        assertTrue("时间要带具体几点", text!!.contains(":"))
+        assertTrue("相对时长要留在后面", text!!.endsWith("12 分钟前"))
+
+        val official = ParkingPhotoRules.parkedAt(
+            ParkingPhotoSource.OFFICIAL,
+            hasPhoto = true,
+            savedAt = now - 3 * 86_400_000L,
+            now = now,
+        )
+        assertTrue("车端方案要说「驻车时间」", official!!.startsWith("驻车时间 "))
+        assertTrue(official.endsWith("3 天前"))
+    }
+
+    /** mtime 丢失或时间在未来：返回 null，由界面退回一句中性文案，不编一个假时间。 */
+    @Test
+    fun `驻车页时间读不到或在未来时返回 null`() {
+        listOf(ParkingPhotoSource.PHONE, ParkingPhotoSource.OFFICIAL).forEach { source ->
+            assertNull(
+                ParkingPhotoRules.parkedAt(source, hasPhoto = true, savedAt = 0L, now = now),
+            )
+            assertNull(
+                ParkingPhotoRules.parkedAt(
+                    source,
+                    hasPhoto = true,
+                    savedAt = now + 60_000L,
+                    now = now,
+                ),
+            )
+        }
+    }
 }

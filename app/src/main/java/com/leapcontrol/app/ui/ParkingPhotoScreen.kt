@@ -75,8 +75,15 @@ import com.leapcontrol.app.ParkingPhotoSourceRules
 @Composable
 fun ParkingPhotoScreen(runtime: AppRuntime, onBack: () -> Unit, onMessage: (String) -> Unit = {}) {
     val C = LocalAppColors.current
-    // 1400 与找车页一致：这一页的图也接近整屏，再高只是白吃内存
-    val photo = rememberParkingPhoto(runtime, onMessage, thumbSize = 1400)
+    // 1400 与找车页一致：这一页的图也接近整屏，再高只是白吃内存。
+    // refreshOfficialOnEnter = true：车端照片是「这一趟停车」的，每次进来都得重新问一次，
+    // 否则看到的永远是上一次停车缓存下来的那张（用户明确要求）。
+    val photo = rememberParkingPhoto(
+        runtime,
+        onMessage,
+        thumbSize = 1400,
+        refreshOfficialOnEnter = true,
+    )
     val source by runtime.parkingPhotoSource.collectAsState()
     val official by runtime.officialPhotoStatus.collectAsState()
     var previewPhoto by remember { mutableStateOf(false) }
@@ -253,9 +260,11 @@ private fun OfficialPanel(
     val loading = status == OfficialPhotoStatus.Loading
     // 状态那句话是「正在取 / 还没上传 / 不支持 / 网络失败」，没有时才退回泛泛的提示
     val statusLine = ParkingPhotoSourceRules.statusText(status)
-    val caption = ParkingPhotoRules.officialTakenAt(
+    // 驻车时间：车端方案取车辆上报的停车时刻（读不到时才退回取回时刻）
+    val caption = ParkingPhotoRules.parkedAt(
+        source = ParkingPhotoSource.OFFICIAL,
         hasPhoto = photo.hasPhoto,
-        uploadTime = photo.savedAt,
+        savedAt = photo.savedAt,
         now = System.currentTimeMillis(),
     )
 
@@ -316,7 +325,10 @@ private fun OfficialPanel(
                     text = caption ?: "车端照片",
                     color = C.accent,
                     fontSize = 12.sp,
-                    maxLines = 1,
+                    // 带上具体时刻后这行变长了（「驻车时间 11 月 14 日 20:31 · 3 天前」），
+                    // 窄屏允许折两行，宁可贵一点高度也不把时间截断
+                    lineHeight = 17.sp,
+                    maxLines = 2,
                     modifier = Modifier.weight(1f),
                 )
                 Text(
@@ -485,11 +497,13 @@ private fun EmptyPhoto(onCapture: () -> Unit) {
     }
 }
 
-/** 已拍过：大图（点开全屏）+ 拍摄时间 + 重拍 / 删除。 */
+/** 已拍过：大图（点开全屏）+ 拍照时间 + 重拍 / 删除。 */
 @Composable
 private fun TakenPhoto(photo: ParkingPhotoState, onPreview: () -> Unit) {
     val C = LocalAppColors.current
-    val caption = ParkingPhotoRules.takenAt(
+    // 手机方案这行写的就是快门时间：用户要的是「几点停的」，不是「多久之前」
+    val caption = ParkingPhotoRules.parkedAt(
+        source = ParkingPhotoSource.PHONE,
         hasPhoto = photo.hasPhoto,
         savedAt = photo.savedAt,
         now = System.currentTimeMillis(),
@@ -527,7 +541,9 @@ private fun TakenPhoto(photo: ParkingPhotoState, onPreview: () -> Unit) {
                 text = caption ?: "车位已拍照",
                 color = C.accent,
                 fontSize = 12.sp,
-                maxLines = 1,
+                // 同车端那一行：带上具体时刻后会变长，允许折两行
+                lineHeight = 17.sp,
+                maxLines = 2,
                 modifier = Modifier.weight(1f),
             )
             Text(

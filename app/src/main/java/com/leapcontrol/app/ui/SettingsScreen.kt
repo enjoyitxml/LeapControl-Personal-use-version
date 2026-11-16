@@ -129,8 +129,11 @@ fun SettingsScreen(
     var confirmGate by remember { mutableStateOf(runtime.biometricConfirmEnabled()) }
     // 蓝牙钥匙详情页（从本页进入时以整页覆盖的形式出现，返回即回到设置）
     var showBleKey by remember { mutableStateOf(false) }
-    // 蓝牙钥匙总开关「关 → 开」前的提示（适配性一般、建议用官方 App 钥匙）
+    // 蓝牙钥匙的开启提示：既是「关 → 开」的闸，也是未开启时进详情页的闸
+    // （适配性一般、会和官方 App 抢蓝牙信道，点「仍要开启」才放行）
     var showBlePrompt by remember { mutableStateOf(false) }
+    // 点「仍要开启」之后是否顺势进详情页：从整行点进来的才进，光拨开关的留在设置页
+    var enterBleAfterPrompt by remember { mutableStateOf(false) }
     LocalBleKeyHost.current?.let { host ->
         if (showBleKey) {
             BluetoothKeyScreen(host = host, onBack = { showBleKey = false })
@@ -260,39 +263,48 @@ fun SettingsScreen(
                 )
             }
 
-            // 蓝牙钥匙只放「总开关 + 一个进详情的入口」：感应距离、自动解锁这些在详情页里，
-            // 免得设置页被七八个开关撑满，也避免同一项设置在两处出现两份状态。
+            // 蓝牙钥匙在这一页**只留一个功能开关**（2026-11-15 用户定，对齐上游）：
+            // 配对、靠近解锁、离开落锁、感应距离、后台保活整组都收在详情页里，
+            // 设置页不再多摆一行「蓝牙钥匙设置」入口 —— 一个开关说明「开不开」，
+            // 点进去才是参数，两页的分工和上游一致。
+            //
+            // 但详情页得有个门：开关没开的时候点这一行只弹「开启提示」，
+            // 点「仍要开启」才算真的打开，也才允许进详情页。还没配对车辆的直接进配对页 ——
+            // 车端没有配对记录时开关想拨也拨不上，硬拦在这里会变成死胡同。
             val bleHost = LocalBleKeyHost.current
             if (bleHost != null) {
                 Spacer(Modifier.height(10.dp))
-                SettingsCard("蓝牙钥匙") {
-                    SwitchRow(
-                        label = "智能无感钥匙",
-                        desc = when {
-                            !bleHost.bound -> "还没有配对车辆，先点右侧进入配对吧"
-                            bleHost.pending -> "设置待车辆确认"
-                            bleHost.enabled -> "已开启，带着手机靠近车辆即可解锁"
-                            else -> "已关闭，配对记录保留"
-                        },
+                SettingsCard {
+                    BleKeyRow(
                         checked = bleHost.enabled,
+                        desc = when {
+                            !bleHost.bound -> "未开启 · 打开后先与车辆配对一次"
+                            bleHost.pending -> "设置已下发，等待车辆确认"
+                            bleHost.enabled -> "已开启 · 点此行进入配对、感应距离等设置"
+                            else -> "已关闭 · 配对记录保留，打开后会先说明注意事项"
+                        },
                         onCheckedChange = { on ->
-                            if (!bleHost.bound) {
-                                message = "请先进入蓝牙钥匙页完成车辆配对"
-                            } else if (on && !bleHost.enabled) {
+                            if (on) {
                                 // 开之前先过提示：这功能适配性一般，会和官方 App 抢蓝牙信道
+                                enterBleAfterPrompt = false
                                 showBlePrompt = true
                             } else {
-                                bleHost.toggleEnabled(on)
+                                bleHost.toggleEnabled(false)
                                 message = bleHost.notice
                             }
                         },
+                        onClick = {
+                            // 功能开着才进详情页；没开就先走提示，别让人绕过这道说明。
+                            // 从整行点进来的，确认后顺势把人送进去（他要的就是这一页）；
+                            // 只是拨了一下开关的，就留在设置页，不把人拽走。
+                            if (bleHost.enabled) {
+                                showBleKey = true
+                            } else {
+                                enterBleAfterPrompt = true
+                                showBlePrompt = true
+                            }
+                        },
                     )
-                    Spacer(Modifier.height(12.dp))
-                    ClickRow(
-                        title = "蓝牙钥匙设置",
-                        desc = "配对车辆 · 靠近解锁 · 感应距离",
-                        iconRes = R.drawable.ic_phosphor_key,
-                    ) { showBleKey = true }
                 }
             }
         }
@@ -944,19 +956,30 @@ fun SettingsScreen(
     }
 
     // ---- 蓝牙钥匙开启提示 ----
-    // 设置页这个开关和详情页里那个是同一个状态，所以两边都要过同一道提示；
-    // 这里确认后就地调用即可，notice 顺手带回下面那行消息。
+    // 设置页那个开关和详情页里那个是同一个状态，所以两边都要过同一道提示。
+    // 确认之后分两种：已配对的就地打开；还没配对的直接进详情页去配对
+    // （配对成功时车端默认就是开启状态，不需要再拨一次开关）。
     if (showBlePrompt) {
         val ble = LocalBleKeyHost.current
         BleEnablePromptDialog(
             onConfirm = {
                 showBlePrompt = false
+                // 没配对时必须进二级页（配对只能在那一页做）；从整行点进来的也进；
+                // 只有「在设置页拨开关」这一种停在原地。
+                val enterPage = enterBleAfterPrompt || ble?.bound == false
+                enterBleAfterPrompt = false
                 ble?.let {
-                    it.toggleEnabled(true)
-                    message = it.notice
+                    if (it.bound) {
+                        it.toggleEnabled(true)
+                        message = it.notice
+                    }
                 }
+                if (enterPage) showBleKey = true
             },
-            onDismiss = { showBlePrompt = false },
+            onDismiss = {
+                showBlePrompt = false
+                enterBleAfterPrompt = false
+            },
         )
     }
 
@@ -1063,16 +1086,65 @@ fun SwitchRow(
             Text(desc, color = C.textSecondary, fontSize = 11.sp)
         }
         Spacer(Modifier.width(12.dp))
-        Switch(
-            checked = checked,
-            onCheckedChange = onCheckedChange,
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = Color.White,
-                checkedTrackColor = C.accent,
-                uncheckedThumbColor = Color.White,
-                uncheckedTrackColor = C.barTrack,
-            ),
+        SettingsSwitch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+/** 开关本体：所有设置行共用一套配色，别在别处再手搓一遍。 */
+@Composable
+private fun SettingsSwitch(checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    val C = LocalAppColors.current
+    Switch(
+        checked = checked,
+        onCheckedChange = onCheckedChange,
+        colors = SwitchDefaults.colors(
+            checkedThumbColor = Color.White,
+            checkedTrackColor = C.accent,
+            uncheckedThumbColor = Color.White,
+            uncheckedTrackColor = C.barTrack,
+        ),
+    )
+}
+
+/**
+ * 蓝牙钥匙那一行：整行可点（进详情页），右侧是功能开关。
+ *
+ * 两个点击目标分工明确（用户 2026-11-15 定）：
+ *   · 开关只管「这个功能开不开」；
+ *   · 行的其余部分是进二级页的门（配对、感应距离、后台保活都在里面）。
+ * 两者都不直接下发，一律先交给调用方过一遍「开启提示」。
+ */
+@Composable
+private fun BleKeyRow(
+    checked: Boolean,
+    desc: String,
+    onCheckedChange: (Boolean) -> Unit,
+    onClick: () -> Unit,
+) {
+    val C = LocalAppColors.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            // 左边留 14dp 与上面的 ClickRow（控车密码）图标对齐；
+            // 右边不留 —— 开关要和其它 SwitchRow 一样贴着卡片内边，别独自缩进去一截。
+            .clickable(onClick = onClick)
+            .padding(start = 14.dp, end = 0.dp, top = 12.dp, bottom = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            painter = painterResource(R.drawable.ic_phosphor_key),
+            contentDescription = null,
+            tint = C.textPrimary,
+            modifier = Modifier.size(22.dp),
         )
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text("蓝牙钥匙", color = C.textPrimary, fontSize = 14.sp)
+            Spacer(Modifier.height(2.dp))
+            Text(desc, color = C.textSecondary, fontSize = 11.sp, lineHeight = 15.sp)
+        }
+        Spacer(Modifier.width(12.dp))
+        SettingsSwitch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
 

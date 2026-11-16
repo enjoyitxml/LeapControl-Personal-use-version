@@ -276,7 +276,15 @@ class BleKeyPolicyTest {
         )
         val personalization = ui("PersonalizationScreen")
         assertTrue("个性化里的开关被删了", personalization.contains("checked = runtime.bleIconVisible.value"))
-        assertTrue("打开入口前的风险说明被删了", personalization.contains("if (on) showBleNotice = true"))
+        assertTrue(
+            "打开入口前的风险说明被删了",
+            personalization.contains("if (on) showBlePrompt = true"),
+        )
+        // 2026-11-15：个性化与设置页共用同一个开启提示，不再各写一套说法
+        assertTrue(
+            "个性化又用回自己的弹窗了",
+            personalization.contains("BleEnablePromptDialog("),
+        )
     }
 
     private companion object {

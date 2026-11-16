@@ -476,6 +476,7 @@ fun MainScreen(
                         SettingsPage.PLAYBOOK -> PlaybookScreen(
                             onBack = { closeSettings() },
                             journalEnabled = journalEnabled,
+                            onOpenAmapConsole = { runtime.openExternal(AmapConsoleUrl) },
                         )
 
                         // 车模外观从个性化进，返回也回个性化 —— 别让用户按一次返回直接掉回「我的」

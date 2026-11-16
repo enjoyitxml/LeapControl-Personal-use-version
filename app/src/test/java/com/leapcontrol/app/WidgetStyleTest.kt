@@ -44,11 +44,18 @@ class WidgetStyleTest {
     }
 
     @Test
-    fun `默认字色与默认控件色必须不同`() {
-        // 两色相同的话，按键生效时亮点与常态一样 —— 用户看不出解锁 / 空调已经开了
-        assertTrue(
-            "默认字色与控件色相同，按键高亮会失效",
-            WidgetStyle.DEFAULT_INK != WidgetStyle.DEFAULT_CTRL,
+    fun `透明版式默认字色与控件色都是白`() {
+        // 2026-11-16 用户定稿：全透明默认整张卡只有一种颜色（白），
+        // 按键生效时不再变绿，「哪个键开着」交给右上角那句提示说明。
+        assertEquals(
+            "默认字色不是白",
+            0xFFFFFFFF.toInt(),
+            WidgetStyle.DEFAULT_INK,
+        )
+        assertEquals(
+            "默认控件色不是白",
+            0xFFFFFFFF.toInt(),
+            WidgetStyle.DEFAULT_CTRL,
         )
         assertTrue("默认字色应该是浅色（深壁纸上最好读）", WidgetStyle.isLight(WidgetStyle.DEFAULT_INK))
     }
@@ -56,8 +63,9 @@ class WidgetStyleTest {
     @Test
     fun `三种版式的名字与顺序`() {
         assertEquals(listOf("素纸", "沉浸", "全透明"), WidgetStyle.ALL.map { WidgetStyle.displayName(it) })
-        // 素纸是默认：老用户升级后不能突然变成另一套版式
-        assertEquals(WidgetStyle.STYLE_A, WidgetStyle.ALL.first())
+        // 默认是全透明（2026-11-16 用户定稿）；三张缩略图的排列顺序不动，
+        // 默认那张在最后，用户扫一眼就能看出「现在用的是哪套」
+        assertEquals(WidgetStyle.STYLE_T, WidgetStyle.DEFAULT_STYLE)
     }
 
     @Test

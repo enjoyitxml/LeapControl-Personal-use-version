@@ -36,6 +36,39 @@ class BleEnablePromptTest {
     }
 
     @Test
+    fun `设置页只留蓝牙钥匙的功能开关，其余设置收进详情页`() {
+        val settings = source("app/src/main/java/com/leapcontrol/app/ui/SettingsScreen.kt")
+        // 2026-11-15 用户定：设置里只显示功能开关，配对 / 感应距离 / 后台保活都搬进二级页。
+        // 这条断言就是防止哪天又顺手加回一行「蓝牙钥匙设置」入口。
+        assertTrue(
+            "设置页又摆回了「蓝牙钥匙设置」入口",
+            !settings.contains("title = \"蓝牙钥匙设置\""),
+        )
+        assertTrue("设置页那一行没了", settings.contains("BleKeyRow("))
+        // 整行是进二级页的门：开着才放行，没开先弹提示（记下「确认后要进去」再弹）
+        assertTrue(
+            "整行没按「功能是否开启」门禁",
+            settings.contains("if (bleHost.enabled) {") &&
+                settings.contains("enterBleAfterPrompt = true"),
+        )
+        // 还没配对时点「仍要开启」要能把人送进配对页：车端没有配对记录时开关根本拨不上，
+        // 光拦在这里就是死胡同。
+        val confirm = settings.substringAfter("if (showBlePrompt) {")
+        assertTrue("未配对时没把人送进配对页", confirm.contains("showBleKey = true"))
+    }
+
+    @Test
+    fun `界面里不再出现「遇到问题…我会尽量修」这类承诺`() {
+        // 用户 2026-11-15 要求删掉：真实情况是「能不能修取决于车型」，写在界面上等于空头承诺。
+        val uiDir = File(projectDir, "app/src/main/java/com/leapcontrol/app/ui")
+        val leftovers = uiDir.listFiles().orEmpty()
+            .filter { it.extension == "kt" }
+            .filter { it.readText().contains("我会尽量修") }
+            .map { it.name }
+        assertTrue("还留着这句：$leftovers", leftovers.isEmpty())
+    }
+
+    @Test
     fun `两个总开关入口都在开之前弹提示`() {
         // 详情页里的开关
         val detail = source("app/src/main/java/com/leapcontrol/app/ui/BluetoothKeyScreen.kt")

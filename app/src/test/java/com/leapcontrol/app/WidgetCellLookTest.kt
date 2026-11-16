@@ -58,17 +58,29 @@ class WidgetCellLookTest {
         }
     }
 
-    /** 新增的两个 prefs 键必须默认 true：键不存在时读到默认值，不需要一次性迁移标记。 */
+    /**
+     * 两个开关的默认值：**按键底默认关、分隔线默认开**（2026-11-16 用户定稿）。
+     *
+     * 默认版式改成全透明之后，按键再压一层玻璃底就跟壁纸糊在一起了；
+     * 分隔线留着 —— 那是全透明版式里唯一还看得出「这是五个按键」的边界。
+     *
+     * 老设备 prefs 里存着旧默认的 `cell_bg=true`，光改常量它读不到新默认，
+     * 所以必须有 [WidgetStyle.applyNewDefaults] 那次一次性迁移；迁移之后完全听用户的。
+     */
     @Test
-    fun `两个外观开关默认都开着`() {
+    fun `按键底默认关、分隔线默认开`() {
         val src = codeOnly(read("app/src/main/java/com/leapcontrol/app/widget/WidgetStyle.kt"))
         assertTrue(
-            "按键底色开关的默认值不是 true，老用户升级后按键会突然变全裸",
-            src.contains("""getBoolean(KEY_CELL_BG, true)"""),
+            "按键底色开关的默认值不是 false",
+            src.contains("""getBoolean(KEY_CELL_BG, false)"""),
         )
         assertTrue(
             "分隔线开关的默认值不是 true",
             src.contains("""getBoolean(KEY_DIVIDER, true)"""),
+        )
+        assertTrue(
+            "没有一次性迁移：老设备会一直停在被写死的旧默认上",
+            src.contains("applyNewDefaults") && src.contains("KEY_DEFAULTS_V2"),
         )
     }
 
@@ -109,12 +121,13 @@ class WidgetCellLookTest {
         )
     }
 
-    /** 两个开关各接各的 setter —— 用户要的是「单独选择」，共用一个就等于只有一个开关。 */
+    /** 每个开关各接各的 setter —— 用户要的是「单独选择」，共用一个就等于只有一个开关。 */
     @Test
-    fun `设置页两个开关分别绑定各自的偏好`() {
+    fun `设置页各开关分别绑定各自的偏好`() {
         val src = codeOnly(read("app/src/main/java/com/leapcontrol/app/ui/WidgetSettings.kt"))
         assertTrue("没有「按键背景」这一行", src.contains("""label = "按键背景""""))
         assertTrue("没有「分隔线」这一行", src.contains("""label = "分隔线""""))
+        assertTrue("没有「显示车标」这一行", src.contains("""label = "显示车标""""))
         assertTrue(
             "按键背景开关没接 setCellBgVisible",
             src.contains("WidgetStyle.setCellBgVisible(context, on)"),
@@ -123,8 +136,12 @@ class WidgetCellLookTest {
             "分隔线开关没接 setDividersVisible",
             src.contains("WidgetStyle.setDividersVisible(context, on)"),
         )
-        // 改完必须全量重画：这两样都在 RemoteViews 的「静态部分」里，增量更新碰不到
+        assertTrue(
+            "车标开关没接 setLogoVisible",
+            src.contains("WidgetStyle.setLogoVisible(context, on)"),
+        )
+        // 改完必须全量重画：这三样都在 RemoteViews 的「静态部分」里，增量更新碰不到
         val toggles = Regex("""onToggle\w+ = \{ on ->""").findAll(src).count()
-        assertEquals("两个开关回调应该各写一处", 2, toggles)
+        assertEquals("三处开关回调应该各写一处", 3, toggles)
     }
 }

@@ -1616,7 +1616,11 @@ fun HomeScreen(
         } else if (showBleKey && bleHost != null) {
             BluetoothKeyScreen(host = bleHost, onBack = { showBleKey = false })
         } else if (showPlaybook) {
-            PlaybookScreen(onBack = { showPlaybook = false }, journalEnabled = journalOn)
+            PlaybookScreen(
+                onBack = { showPlaybook = false },
+                journalEnabled = journalOn,
+                onOpenAmapConsole = { runtime.openExternal(AmapConsoleUrl) },
+            )
         } else {
             // 外层 Box：承载悬浮反馈条（指令结果必须让用户看到，放在滚动列表底部等于看不见）
             Box(modifier = Modifier.fillMaxSize()) {

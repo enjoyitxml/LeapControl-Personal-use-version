@@ -101,6 +101,45 @@ class TripSamplingTest {
         assertTrue(TripSampling.intervalMsOf(TripSampling.INTERVALS_SEC.first()) >= 10_000L)
     }
 
+    /**
+     * 2026-11-16 用户截图：「后台每 15 秒读一次车况并记点（最近 **498552:21:53**）」。
+     *
+     * 原因就一句话 —— 把 epoch 毫秒喂给了 `TripFormat.clock()`。那个格式是给「已记录」
+     * 计时器用的**时长**格式（ms / 1000 后换成 mm:ss、h:mm:ss），约 1.79e12 毫秒除以 3600
+     * 正好五十多万小时，于是印出一串天文数字。
+     *
+     * 所以这条守门的判据是**实参带不带「时刻」语义**：`clock(live.activeMs(now))` 合法
+     * （自己算出来的时长），`clock(live.lastAt)` / `clock(trip.startAt)` 一律不许。
+     * 界面上的钟点只有 `TripFormat.time()` / `dayTime()` 两条路。
+     */
+    @Test
+    fun `钟点不许喂给时长格式 clock`() {
+        val offenders = mutableListOf<String>()
+        val root = File(projectDir, "app/src/main/java")
+        root.walkTopDown()
+            .filter { it.isFile && it.name.endsWith(".kt") }
+            .forEach { f ->
+                val src = codeOf(f.relativeTo(projectDir).path)
+                Regex("""TripFormat\.clock\(([^)\n]*)""").findAll(src).forEach { m ->
+                    val arg = m.groupValues[1]
+                    // activeMs(now) / duration 这类自己算的时长没问题；带 At 的是时间戳
+                    if (arg.contains("At") || arg.contains("Time")) {
+                        offenders += "${f.name}: clock($arg)"
+                    }
+                }
+            }
+        assertTrue(
+            "clock() 只吃时长，时刻要用 TripFormat.time()：$offenders",
+            offenders.isEmpty(),
+        )
+        // 实时面板括号里那个「最近 xx:xx」必须是钟点
+        val live = codeOf("app/src/main/java/com/leapcontrol/app/ui/TripLivePanel.kt")
+        assertTrue(
+            "「最近采样」没走钟点格式",
+            live.contains("val lastSample = live.lastAt.takeIf { it > 0L }?.let { TripFormat.time(it) }"),
+        )
+    }
+
     // ---------------- 去重判据 ----------------
 
     @Test

@@ -14,6 +14,7 @@ import java.io.File
  * 「轨迹修正的按钮放在顶部轨迹详情的下方，另外删掉涂抹的方案，只保留选点的方案，
  *   轨迹修正的二级界面字体太小了，所有的字体和按钮都放大一点。」
  * 「修正了之后我好像没有看到『确认』、『保存』按钮。」
+ * 「行程轨迹修正路线的这个界面，我圈选的这几个按钮都看不清，优化一下显示效果。」（2026-11-16）
  *
  * ## 钉住的规则
  * 1. 地图层必须自己 `clipToBounds()`，标题栏 / 底部说明是浮在地图上的两层；
@@ -23,7 +24,8 @@ import java.io.File
  * 4. **修正态全部按钮在顶部「轨迹详情」那一层**，最后一个是主按钮「确认保存」；
  *    右上角胶囊只在浏览态出现；
  * 5. 字号与点击区整体放大，不许退回到 10.5sp / 30dp 那套小字；
- * 6. 涂抹方案彻底删除，界面只剩选点。
+ * 6. 涂抹方案彻底删除，界面只剩选点；
+ * 7. 按钮的禁用态只降信息量、不换深底：灰字压灰底等于没字，白底 chip 必须带描边。
  */
 class TripMapViewerLayoutTest {
 
@@ -83,12 +85,21 @@ class TripMapViewerLayoutTest {
     @Test
     fun `全屏窗口必须走系统安全区 不许把栏贴到手势区上`() {
         assertFalse(
-            "关掉系统栏避让会让 navigationBarsPadding() 恒为 0，按钮被整排裁掉",
+            "关掉系统栏避让会让按钮被整排裁掉",
             viewer.contains("decorFitsSystemWindows = false"),
         )
         assertTrue("全屏宽度得靠 usePlatformDefaultWidth", viewer.contains("usePlatformDefaultWidth = false"))
         assertTrue("顶部标题栏还要避让状态栏", viewer.contains("statusBarsPadding()"))
-        assertTrue("底部说明还要避让导航栏", viewer.contains("navigationBarsPadding()"))
+        // 底部留白不能再只靠 navigationBarsPadding()：这个 Dialog 里它恒为 0，
+        // 提示文字会压在导航栏里（用户 2026-11-15 反馈「提示文字被手机遮挡」）。
+        assertFalse(
+            "navigationBarsPadding() 在这个全屏 Dialog 里拿到的是 0，别再用它当底部安全距离",
+            viewer.contains(".navigationBarsPadding()"),
+        )
+        assertTrue(
+            "底部说明没按真实导航栏高度留白，最后一行会压在系统手势区上",
+            viewer.contains("bottom = dialogBottomGap(extra = 10.dp)"),
+        )
     }
 
     @Test
@@ -161,5 +172,37 @@ class TripMapViewerLayoutTest {
         }
         assertTrue("选点手势没了", viewer.contains("routePickGestures("))
         assertTrue("手势要按 editing 重启", viewer.contains("pointerInput(editing)"))
+    }
+
+    // ---------------- 2026-11-16：修正态按钮看不清 ----------------
+
+    /**
+     * 用户截图：「撤一点 / 撤销 / 按导航补齐 / 取消」几个按钮看不清。
+     *
+     * 两个原因叠在一起：
+     *  1. 禁用底色是「轨道色再 copy(alpha = 0.6f)」——`Color.copy` 是**替换** alpha 而不是乘，
+     *     20% 黑被替换成 60% 黑，按钮成了深灰块；
+     *  2. 禁用文字又乘了 0.6 的透明度，浅灰字压在深灰底上，等于没有字。
+     * 另外可用的次要按钮是 90% 白，压在同样近白的标题栏上连边界都没有（「取消」）。
+     */
+    @Test
+    fun `修正态按钮禁用时也要看得清`() {
+        assertFalse(
+            "禁用底色别再 copy(alpha)：那会把 20% 黑替换成 60% 黑，按钮变深灰块",
+            viewer.contains("C.barTrack.copy(alpha"),
+        )
+        assertFalse(
+            "禁用文字别再乘 alpha，灰字压灰底等于没字",
+            viewer.contains("C.textSecondary.copy(alpha = 0.6f)"),
+        )
+        assertTrue(
+            "次要按钮要有一圈 1dp 描边，白底 chip 压在近白标题栏上才有边界",
+            viewer.contains("Modifier.border(1.dp, it, shape)"),
+        )
+        assertTrue("禁用态用完整的次级文字色", viewer.contains("else -> C.textSecondary"))
+        assertTrue(
+            "主按钮不可用时仍留在主题色系（淡主题色底 + 主题色字）",
+            viewer.contains("C.accent.copy(alpha = 0.16f)"),
+        )
     }
 }

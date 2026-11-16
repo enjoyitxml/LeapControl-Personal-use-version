@@ -123,15 +123,26 @@ class ParkingPhotoSourceTest {
     }
 
     @Test
-    fun `详情页的说法区分上传与拍摄`() {
-        assertEquals("刚刚由车辆上传", ParkingPhotoRules.officialTakenAt(true, now - 10_000L, now))
-        assertEquals(
-            "车辆上传于 3 天前",
-            ParkingPhotoRules.officialTakenAt(true, now - 3 * 86_400_000L, now),
+    fun `详情页的驻车时间用车端上报的停车时刻`() {
+        val recent = ParkingPhotoRules.parkedAt(
+            ParkingPhotoSource.OFFICIAL,
+            true,
+            now - 10_000L,
+            now,
         )
+        assertTrue(recent!!.startsWith("驻车时间 "))
+        assertTrue(recent.endsWith("刚刚"))
+
+        val old = ParkingPhotoRules.parkedAt(
+            ParkingPhotoSource.OFFICIAL,
+            true,
+            now - 3 * 86_400_000L,
+            now,
+        )
+        assertTrue(old!!.endsWith("3 天前"))
         // 上传时间读不到 / 落在未来：不编
-        assertNull(ParkingPhotoRules.officialTakenAt(true, 0L, now))
-        assertNull(ParkingPhotoRules.officialTakenAt(true, now + 60_000L, now))
+        assertNull(ParkingPhotoRules.parkedAt(ParkingPhotoSource.OFFICIAL, true, 0L, now))
+        assertNull(ParkingPhotoRules.parkedAt(ParkingPhotoSource.OFFICIAL, true, now + 60_000L, now))
     }
 
     // ---- 状态文案 ----

@@ -90,8 +90,8 @@ android {
         applicationId = if (personalEdition) "com.leapcontrol.personal" else "com.leapcontrol.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 20402
-        versionName = "2.4.2"
+        versionCode = 20403
+        versionName = "2.4.3"
         resourceConfigurations += setOf("zh", "zh-rCN")
         buildConfigField("String", "AMAP_WEB_KEY_ENCRYPTED", "\"\"")
         buildConfigField("String", "PGYER_API_KEY_ENCRYPTED", "\"\"")
