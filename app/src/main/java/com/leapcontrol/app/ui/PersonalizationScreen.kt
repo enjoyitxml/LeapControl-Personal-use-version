@@ -361,6 +361,20 @@ fun PersonalizationScreen(
 
             Spacer(Modifier.height(10.dp))
 
+            // 壁纸文字对比：只对「我的壁纸」生效，但常驻显示 —— 藏起来的话
+            // 用户看到字突然变深 / 变浅会以为出了 bug
+            SettingsCard("壁纸文字对比") {
+                SwitchRow(
+                    label = "文字随壁纸反色",
+                    desc = "按壁纸的明暗自动切文字：图偏亮用深色字、偏暗用浅色字，" +
+                        "换成夜景也不用先去改明暗模式。关掉则一直跟随上面的明暗设置。",
+                    checked = runtime.wallpaperAutoContrast.value,
+                    onCheckedChange = { runtime.setWallpaperAutoContrast(it) },
+                )
+            }
+
+            Spacer(Modifier.height(10.dp))
+
             SettingsCard("相伴卡背景") {
                 OwnershipBackdropGrid(
                     runtime = runtime,

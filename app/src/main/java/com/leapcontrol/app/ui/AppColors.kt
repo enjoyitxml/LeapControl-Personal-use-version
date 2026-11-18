@@ -32,6 +32,17 @@ data class AppColors(
     val panelBg: Color,
     val textPrimary: Color,
     val textSecondary: Color,
+    /**
+     * **直接压在背景（自定义壁纸 / 场景绘制）上的文字**。
+     *
+     * [textSecondary] 是「卡片里」的次要文字：卡片是不透光的实心底，
+     * 中灰（浅色 0x7A7E87）压上去还够看。但首页控车按钮那排标签是直接浮在
+     * 壁纸 / 湖面高光上的，同一档灰就只剩一层影子（2026-11-16 用户截图反馈）。
+     *
+     * 所以这里单独给一档：接近主文字色、**不靠 alpha 稀释**。半透明会让背景
+     * 透上来，越亮的地方字越淡 —— 正是看不清的成因。深色档同理取近白。
+     */
+    val textOnBackdrop: Color,
     val accent: Color,
     /** 圆形快捷按钮底色 */
     val iconBg: Color,
@@ -88,6 +99,8 @@ private fun lightColors(accent: Color = DefaultAccent) = AppColors(
     panelBg = mix(Color.White, accent, 0.05f),
     textPrimary = Color(0xFF1B1D22),
     textSecondary = Color(0xFF7A7E87),
+    // 压在壁纸上的字：比次级灰深一大截，仍比纯黑柔一点，不抢车模
+    textOnBackdrop = Color(0xFF31363D),
     accent = accent,
     iconBg = Color(0x9CFFFFFF),
     quickButtonBg = Color(0xFFFFFFFF),
@@ -114,6 +127,8 @@ private fun darkColors(accent: Color = DefaultAccent) = AppColors(
     panelBg = mix(Color(0xFF1B1E24), accent, 0.10f),
     textPrimary = Color(0xFFF2F2F4),
     textSecondary = Color(0xFF8E9099),
+    // 深色档：近白，比次级灰亮两档；夜间壁纸再暗也读得出来
+    textOnBackdrop = Color(0xFFE7E9EC),
     accent = accent,
     iconBg = Color(0x1FFFFFFF),
     // 深色下用略高于页面的实心圆，靠投影与底色差异浮起来

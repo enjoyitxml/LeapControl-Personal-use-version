@@ -2661,6 +2661,14 @@ class AppRuntime(context: Context) {
         val lightAccent: Int = 0,
         /** 夜间壁纸提取出的主题色 */
         val darkAccent: Int = 0,
+        /**
+         * 壁纸的平均亮度（0~1，-1 = 还没算过 / 没设图）。
+         *
+         * 存盘时顺手算一次，用来决定首页文字该用深色还是浅色（见 [WallpaperContrast]）。
+         * 老版本设过壁纸的机器没有这个值，由 [ensureWallpaperLuma] 补一次，别在组合期算。
+         */
+        val lightLuma: Float = -1f,
+        val darkLuma: Float = -1f,
         /** 每次保存 / 删除自增，保证 UI 一定能感知到变化 */
         val revision: Long = 0L,
     ) {
@@ -2671,6 +2679,10 @@ class AppRuntime(context: Context) {
         }
 
         fun accent(dark: Boolean): Int = if (dark) darkAccent else lightAccent
+
+        /** 当前这一侧壁纸的亮度；没设图或还没算出来返回 null。 */
+        fun luma(dark: Boolean): Float? =
+            (if (dark) darkLuma else lightLuma).takeIf { it >= 0f }
     }
 
     private val _customBackdrop = mutableStateOf(readCustomBackdropState())
@@ -2699,6 +2711,8 @@ class AppRuntime(context: Context) {
         ownership = CustomBackdropStore.version(appContext, CustomBackdropKind.OWNERSHIP),
         lightAccent = namingPrefs.getInt("custom_accent_light", 0),
         darkAccent = namingPrefs.getInt("custom_accent_dark", 0),
+        lightLuma = namingPrefs.getFloat("custom_luma_light", -1f),
+        darkLuma = namingPrefs.getFloat("custom_luma_dark", -1f),
     )
 
     fun hasCustomBackdrop(kind: CustomBackdropKind): Boolean =
@@ -2741,12 +2755,18 @@ class AppRuntime(context: Context) {
                     height = small.height,
                     dark = dark,
                 )
+                // 亮度与主色用同一份 64×64 像素算，不再多缩一张图。
+                // 它决定首页文字用深色还是浅色，存下来以后每次进首页直接读，不必再碰位图。
+                val luma = WallpaperPalette.luminanceOf(pixels, small.width, small.height)
                 if (small !== bitmap) small.recycle()
+                val editor = namingPrefs.edit()
                 if (accent != null) {
-                    namingPrefs.edit()
-                        .putInt(if (dark) "custom_accent_dark" else "custom_accent_light", accent)
-                        .apply()
+                    editor.putInt(if (dark) "custom_accent_dark" else "custom_accent_light", accent)
                 }
+                if (luma != null) {
+                    editor.putFloat(if (dark) "custom_luma_dark" else "custom_luma_light", luma)
+                }
+                editor.apply()
             }
         }
 
@@ -2761,12 +2781,16 @@ class AppRuntime(context: Context) {
         // 只从缓存里摘掉，**不要 recycle**：界面上可能还挂着一个 ImageBitmap 在画这一帧，
         // recycle 之后立刻绘制会直接抛 "Canvas: trying to use a recycled bitmap"
         customBackdropCache.remove(kind)
-        val accentKey = when (kind) {
-            CustomBackdropKind.WALLPAPER_DAY -> "custom_accent_light"
-            CustomBackdropKind.WALLPAPER_NIGHT -> "custom_accent_dark"
-            CustomBackdropKind.OWNERSHIP -> null
+        val keys = when (kind) {
+            CustomBackdropKind.WALLPAPER_DAY -> listOf("custom_accent_light", "custom_luma_light")
+            CustomBackdropKind.WALLPAPER_NIGHT -> listOf("custom_accent_dark", "custom_luma_dark")
+            CustomBackdropKind.OWNERSHIP -> emptyList()
         }
-        if (accentKey != null) namingPrefs.edit().remove(accentKey).apply()
+        if (keys.isNotEmpty()) {
+            val editor = namingPrefs.edit()
+            keys.forEach { editor.remove(it) }
+            editor.apply()
+        }
         _customBackdrop.value = readCustomBackdropState()
             .copy(revision = _customBackdrop.value.revision + 1)
     }
@@ -2774,6 +2798,55 @@ class AppRuntime(context: Context) {
     /** 自定义壁纸的主色；没设图或没提取到就返回 null，界面继续用内置主题色。 */
     fun customWallpaperAccent(dark: Boolean): Int? =
         _customBackdrop.value.accent(dark).takeIf { it != 0 }
+
+    /**
+     * 补算壁纸亮度 —— 只服务「老版本就设过壁纸、但还没有亮度记录」的机器。
+     *
+     * 新图在 [saveCustomBackdrop] 里已经算过了，这里只补历史数据。
+     * 在首页的 LaunchedEffect 里调用：IO 线程解码 + 计算，算完写回 prefs 并刷新 State，
+     * 之后每次进首页直接读数字，不再碰位图。有值 / 没设图 / 读不出来都直接返回，可重复调用。
+     */
+    suspend fun ensureWallpaperLuma(kind: CustomBackdropKind) {
+        if (!kind.isWallpaper) return
+        val dark = kind == CustomBackdropKind.WALLPAPER_NIGHT
+        val current = _customBackdrop.value
+        if (current.luma(dark) != null) return
+        if (current.versionOf(kind) <= 0L) return
+
+        val luma = withContext(Dispatchers.IO) {
+            val bitmap = customBackdrop(kind) ?: return@withContext null
+            val small = runCatching { Bitmap.createScaledBitmap(bitmap, 64, 64, true) }.getOrNull()
+                ?: return@withContext null
+            val pixels = IntArray(small.width * small.height)
+            small.getPixels(pixels, 0, small.width, 0, 0, small.width, small.height)
+            val value = WallpaperPalette.luminanceOf(pixels, small.width, small.height)
+            // 只回收自己缩出来的这张；[bitmap] 可能来自 LRU 缓存，界面上还在画它
+            if (small !== bitmap) small.recycle()
+            value
+        } ?: return
+
+        namingPrefs.edit()
+            .putFloat(if (dark) "custom_luma_dark" else "custom_luma_light", luma)
+            .apply()
+        _customBackdrop.value = readCustomBackdropState()
+            .copy(revision = _customBackdrop.value.revision + 1)
+    }
+
+    /**
+     * 自定义壁纸下「文字随壁纸反色」：按壁纸的平均亮度自动切深色 / 浅色文字。
+     *
+     * 默认开 —— 用户上传的图完全不可控，看不清字比「配色被改了一下」更难受；
+     * 明确想要固定明暗的人可以在个性化里关掉，关掉后完全跟随外观模式。
+     */
+    private val _wallpaperAutoContrast = mutableStateOf(
+        namingPrefs.getBoolean("wallpaper_auto_contrast", true),
+    )
+    val wallpaperAutoContrast: State<Boolean> get() = _wallpaperAutoContrast
+
+    fun setWallpaperAutoContrast(on: Boolean) {
+        _wallpaperAutoContrast.value = on
+        namingPrefs.edit().putBoolean("wallpaper_auto_contrast", on).apply()
+    }
 
     // ---------------- 「我的」页头像 ----------------
 

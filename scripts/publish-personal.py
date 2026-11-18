@@ -134,15 +134,20 @@ def version_of(root: str) -> str:
 def changelog_body(root: str, version: str) -> str:
     text = open(os.path.join(root, "CHANGELOG.md"), encoding="utf-8").read()
     m = re.search(rf"## \[{re.escape(version)}\][^\n]*\n(.*?)(?=\n## \[|\Z)", text, re.S)
-    return (m.group(1).strip() if m else "- 见 [CHANGELOG.md](CHANGELOG.md)")
+    if not m or not m.group(1).strip():
+        raise Fail(f"CHANGELOG.md 里没有 [{version}] 的正文，先写 docs/release-notes/v{version}.md 再发")
+    return m.group(1).strip()
 
 
 def public_notes(root: str, version: str) -> str:
-    # 正文完全由 docs/public/release-notes.md 决定。
-    # 首个公开版本（v2.4.1）用户明确要求不列更新条目，正文只有一句
-    # 「公开版的第一个可用版本。」；以后发版直接在这个文件里写条目即可，
-    # {{VERSION}} / {{CHANGELOG}} 两个占位符仍然可用。
+    # 正文 = CHANGELOG 里本次版本那一段（内容由 docs/release-notes/v<版本>.md 决定）。
+    #
+    # 历史坑：v2.4.1 时用户要求首个公开版只写一句话，就把正文**直接写进了这个模板**，
+    # 模板从此不再含占位符；结果 v2.4.3 发出去贴的还是 v2.4.2 的说明（线上用 PATCH 补过）。
+    # 所以模板里必须留 {{CHANGELOG}}，写死正文直接 Fail，别再让它悄悄贴旧说明。
     tpl = open(os.path.join(root, "docs/public/release-notes.md"), encoding="utf-8").read()
+    if "{{CHANGELOG}}" not in tpl:
+        raise Fail("docs/public/release-notes.md 必须包含 {{CHANGELOG}} 占位符，不许把正文写死在模板里")
     return tpl.replace("{{VERSION}}", version).replace(
         "{{CHANGELOG}}", changelog_body(root, version))
 

@@ -216,4 +216,28 @@ else
 fi
 
 rm -f "$NOTES_FILE"
+
+# ---- 7. 清理旧调试包 ----
+# 2026-11-16 用户要求：「之后每次发布新版之后就把之前的调试包删除掉，避免垃圾文件太多」。
+# 判据只有一条：文件名带 debug 的 .apk —— 发版之后它们都已被本版 release 包取代，
+# 留着只会让工作区从几十兆涨到几个 GB（实测一次清理释放 2.2 GB）。
+# 正式包（本版与历史版）一律不动，源码、文档、设计稿也不碰。
+clean_debug_apks() {
+  local dir="$1" depth="$2" n=0 f
+  [[ -d "$dir" ]] || return 0
+  while IFS= read -r -d '' f; do
+    rm -f "$f" || true
+    n=$((n + 1))
+  done < <(find "$dir" -maxdepth "$depth" -type f -name "*debug*.apk" -print0 2>/dev/null || true)
+  if [[ $n -gt 0 ]]; then
+    echo "==> 已清理 $n 个旧调试包：$dir"
+  fi
+  return 0
+}
+
+clean_debug_apks "$ROOT/release" 3
+# 工作区根目录（仓库的上一层，日常把包导到这儿用手机装）：只扫一层，
+# 绝不递归 —— 上层可能还放着别的项目。
+clean_debug_apks "$(cd "$ROOT/.." && pwd)" 1
+
 echo "✅ 发版完成 v${VERSION}"

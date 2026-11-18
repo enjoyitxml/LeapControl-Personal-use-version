@@ -280,6 +280,12 @@ fun CustomWallpaperLayer(
     runtime: AppRuntime,
     dark: Boolean,
     enabled: Boolean,
+    /**
+     * 内容色是否深色。可能因为「文字随壁纸反色」而与 [dark]（取哪张图）不同：
+     * 薄纱必须跟着**内容**走 —— 深字配白纱把背景提亮、浅字配黑纱把背景压暗，
+     * 两个方向都在拉对比，而不是跟错方向把字再糊一次。
+     */
+    contentDark: Boolean = dark,
     modifier: Modifier = Modifier,
 ) {
     if (!enabled) return
@@ -310,10 +316,14 @@ fun CustomWallpaperLayer(
                 .background(
                     Brush.verticalGradient(
                         // 顶部轻一点，让壁纸「天空」那块透出来；往下越来越重，
-                        // 因为下半屏是卡片区，文字密度最高
-                        0.00f to (if (dark) Color.Black else Color.White).copy(alpha = if (dark) 0.42f else 0.30f),
-                        0.45f to (if (dark) Color.Black else Color.White).copy(alpha = if (dark) 0.54f else 0.44f),
-                        1.00f to (if (dark) Color.Black else Color.White).copy(alpha = if (dark) 0.66f else 0.60f),
+                        // 因为下半屏是卡片区，文字密度最高。
+                        // 颜色跟内容色配套（见 [contentDark]），不是跟「取哪张图」走。
+                        0.00f to (if (contentDark) Color.Black else Color.White)
+                            .copy(alpha = if (contentDark) 0.42f else 0.30f),
+                        0.45f to (if (contentDark) Color.Black else Color.White)
+                            .copy(alpha = if (contentDark) 0.54f else 0.44f),
+                        1.00f to (if (contentDark) Color.Black else Color.White)
+                            .copy(alpha = if (contentDark) 0.66f else 0.60f),
                     ),
                 ),
         )

@@ -39,7 +39,11 @@ object ControlActions {
         ControlAction("sunshade", "遮阳帘", R.drawable.ic_qc_sunshade, toggle = true),
         ControlAction("sunroof", "天窗", R.drawable.ic_qc_sunroof, toggle = true, available = { it.sunroof }),
         ControlAction("frunk", "前备箱", R.drawable.ic_qc_frunk, toggle = true, available = { it.frunk }),
-        ControlAction("sentry", "哨兵", R.drawable.ic_qc_sentry, toggle = true, available = { it.sentry }),
+        // 哨兵**不按车型门禁**（2026-11-18 用户要求）：部分车网关不上报 3636 信号，
+        // 能力识别会把它判成「没有这个功能」，于是按钮连加都加不上、指令也发不出去。
+        // 但「车没上报」不等于「车不支持」，这类判断交给云端——发出去，让回执说话
+        // （账号权限另由 AppRuntime.guardSentryPermission 拦，那是账号层面的事）。
+        ControlAction("sentry", "哨兵", R.drawable.ic_qc_sentry, toggle = true),
     )
 
     val defaultLayout: List<String> = all.map { it.id }

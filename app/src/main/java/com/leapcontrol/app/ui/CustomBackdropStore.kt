@@ -192,6 +192,44 @@ object WallpaperPalette {
         return hsvToRgb(h, outS, outV)
     }
 
+    /**
+     * 壁纸的观感亮度：0 = 纯黑，1 = 纯白。
+     *
+     * 用途是决定「字该用深的还是浅的」，所以刻意算**伽马编码值**的加权平均
+     * （0.2126R + 0.7152G + 0.0722B，输入是 0~255 的 sRGB 分量），而不是先线性化：
+     * 线性化会把中灰压到 0.216，跟人眼在屏幕上看到的「差不多一半亮」对不上，
+     * 阈值就没法直观地定在 0.5 附近。
+     *
+     * 采样步长与 [accentFrom] 一致（目标 64×64 量级）—— 壁纸是大色块，抽样足够，
+     * 而且这个函数只在保存 / 首次补算时跑一次。
+     *
+     * @return 0~1；没有可用像素（空数组、尺寸非法、全透明）时返回 null
+     */
+    fun luminanceOf(pixels: IntArray, width: Int, height: Int): Float? {
+        if (pixels.isEmpty() || width <= 0 || height <= 0) return null
+
+        val step = maxOf(1, minOf(width, height) / 64)
+        var sum = 0.0
+        var count = 0
+        var y = 0
+        while (y < height) {
+            var x = 0
+            while (x < width) {
+                val c = pixels[y * width + x]
+                if (((c ushr 24) and 0xFF) >= 128) {
+                    sum += 0.2126 * ((c shr 16) and 0xFF) +
+                        0.7152 * ((c shr 8) and 0xFF) +
+                        0.0722 * (c and 0xFF)
+                    count++
+                }
+                x += step
+            }
+            y += step
+        }
+        if (count == 0) return null
+        return (sum / count / 255.0).toFloat()
+    }
+
     /** RGB → (H 0..360, S 0..1, V 0..1)。不用 `Color.RGBToHSV` 是为了纯 JVM 可测。 */
     internal fun rgbToHsv(r: Int, g: Int, b: Int): Triple<Float, Float, Float> {
         val rf = r / 255f
@@ -228,5 +266,41 @@ object WallpaperPalette {
         val g = ((g1 + m) * 255f).toInt().coerceIn(0, 255)
         val b = ((b1 + m) * 255f).toInt().coerceIn(0, 255)
         return (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+    }
+}
+
+/**
+ * 自定义壁纸下的「内容明暗」判定 —— 也就是用户说的「字跟着背景反色」。
+ *
+ * 为什么需要：内置 40 套主题的底色是自己定的，深底配浅字、浅底配深字，天然看得清；
+ * 用户上传的图完全不可控，浅色模式配一张夜景就是深色字压在黑图上。与其让用户
+ * 自己去找「外观模式」再猜，不如按图的实际亮度替他选一次。
+ *
+ * 只在高对比需求时翻转，**中灰区间保持用户原本的选择**：亮度 0.44~0.56 的图
+ * 深字浅字都读得清，这时硬翻会让人以为「外观模式坏了」。
+ *
+ * 纯函数、不碰 Bitmap / Compose，方便单测。
+ */
+object WallpaperContrast {
+
+    /** 亮到这个程度就当「浅底」，内容改用深色。 */
+    const val LIGHT_BG_AT = 0.56f
+
+    /** 暗到这个程度就当「深底」，内容改用浅色。 */
+    const val DARK_BG_AT = 0.44f
+
+    /**
+     * @param luminance 壁纸平均亮度（[WallpaperPalette.luminanceOf]），null = 还没算出来 / 没有图
+     * @param fallbackDark 用户当前的外观模式（跟随系统的结果），判定不出来时原样返回
+     * @param enabled 用户是否开着「文字随壁纸反色」
+     * @return 内容色是否该用深色系
+     */
+    fun contentDark(luminance: Float?, fallbackDark: Boolean, enabled: Boolean): Boolean {
+        if (!enabled || luminance == null) return fallbackDark
+        return when {
+            luminance >= LIGHT_BG_AT -> false
+            luminance <= DARK_BG_AT -> true
+            else -> fallbackDark
+        }
     }
 }

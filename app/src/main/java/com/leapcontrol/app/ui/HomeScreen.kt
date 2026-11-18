@@ -71,6 +71,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -107,6 +108,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import java.text.SimpleDateFormat
@@ -3268,7 +3270,10 @@ private fun QuickButton(
     // 亮着只会让人以为还能操作
     val on = active == true && enabled
     val c = LocalAppColors.current
-    val dimTint = c.textSecondary.copy(alpha = 0.55f)
+    // 标签是直接压在人家的壁纸 / 场景上的，不能沿用「卡片里的次级灰」：
+    // 那档灰只保证在实心卡片上够看，铺到湖面高光、白墙、逆光草地上就淡成一层影子
+    // （2026-11-16 用户截图）。改用 [AppColors.textOnBackdrop]，不靠 alpha 稀释。
+    val dimTint = c.textOnBackdrop.copy(alpha = 0.55f)
     val iconTint = when {
         !enabled -> dimTint
         on -> c.accent
@@ -3277,8 +3282,12 @@ private fun QuickButton(
     val labelColor = when {
         !enabled -> dimTint
         on -> c.accent
-        else -> c.textSecondary
+        else -> c.textOnBackdrop
     }
+    // 壁纸可能是花树、地砖、逆光的水面：单靠颜色仍有局部压不住的地方，
+    // 再给一层与内容色相反的柔和光晕（深字配白光、浅字配黑光），
+    // 相当于给文字自带一小片底衬，但不会像加胶囊底那样遮住壁纸。
+    val labelShadow = remember(c.isDark) { backdropLabelShadow(c.isDark) }
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     Column(
@@ -3343,6 +3352,7 @@ private fun QuickButton(
             fontSize = 12.sp,
             maxLines = 1,
             fontWeight = if (on) FontWeight.Medium else FontWeight.Normal,
+            style = LocalTextStyle.current.copy(shadow = labelShadow),
         )
     }
 }
@@ -3379,9 +3389,30 @@ private fun EditButton(onClick: () -> Unit) {
             )
         }
         Spacer(Modifier.height(8.dp))
-        Text("编辑", color = c.textSecondary, fontSize = 12.sp)
+        Text(
+            text = "编辑",
+            color = c.textOnBackdrop,
+            fontSize = 12.sp,
+            maxLines = 1,
+            style = LocalTextStyle.current.copy(shadow = remember(c.isDark) { backdropLabelShadow(c.isDark) }),
+        )
     }
 }
+
+/**
+ * 压在壁纸上的 12sp 小标签用的柔光。
+ *
+ * 与内容色相反：深字配白光把底子提亮，浅字配黑光把底子压暗。
+ * 只给「直接浮在壁纸 / 场景上」的文字用（控车按钮标签），
+ * 卡片里的正文不要加 —— 实心底上多一圈光只会显脏。
+ */
+private fun backdropLabelShadow(dark: Boolean): Shadow = Shadow(
+    color = if (dark) Color.Black.copy(alpha = 0.62f) else Color.White.copy(alpha = 0.9f),
+    offset = Offset(0f, 0.5f),
+    // 单位是 px 不是 dp：2.5px 在 3x 屏上不到 1dp，等于没画；
+    // 5px ≈ 1.7dp，一圈刚好看得出来又不会把 12sp 的字糊成光斑
+    blurRadius = 5f,
+)
 
 /**
  * 控车按钮自定义：调整顺序（上移/下移）、移除、添加。

@@ -347,21 +347,45 @@ fun MainScreen(
             darkThemeId = pick.darkThemeId
         }
     }
+    // ---- 壁纸自动反色（用户说的「字跟着背景反色」）----
+    // 用户上传的图完全不可控：浅色模式配一张夜景，深色字就直接糊在黑图上。
+    // 按壁纸的平均亮度决定内容色：亮底配深字、暗底配浅字。
+    // 只对「我的壁纸」生效 —— 内置 40 套主题的底色与文字本来就配套，
+    // 不参与判定，免得换主题时观感莫名变了。
+    val wallpaperAutoContrast by runtime.wallpaperAutoContrast
+    LaunchedEffect(season.custom, dark, customBackdropState.revision) {
+        if (!season.custom) return@LaunchedEffect
+        // 补算老壁纸的亮度：要解码位图，只能在协程里做，绝不能落进组合期
+        runtime.ensureWallpaperLuma(
+            if (dark) CustomBackdropKind.WALLPAPER_NIGHT else CustomBackdropKind.WALLPAPER_DAY,
+        )
+    }
+    val contentDark = WallpaperContrast.contentDark(
+        luminance = if (season.custom) customBackdropState.luma(dark) else null,
+        fallbackDark = dark,
+        enabled = season.custom && wallpaperAutoContrast,
+    )
+
     // 主题色跟着季节走：卡片描边、柱状图、强调元素都用它。
     // 自定义壁纸（season.custom）例外：颜色从壁纸里提取，取不到再退回主题自带的那一档 ——
     // 否则一张蓝色海景壁纸配默认的灰绿强调色，整页会显得脏。
     val wallpaperAccent = if (season.custom) {
-        runtime.customWallpaperAccent(dark)?.let { Color(it) }
+        // 壁纸主色按明暗存了两份，各自规整到可用明度区间（浅色 0.44~0.58 / 深色 0.66~0.80）。
+        // 反色后要取对应那一档，否则深底上顶着一个中明度的强调色，会闷得看不出是强调色。
+        (runtime.customWallpaperAccent(contentDark) ?: runtime.customWallpaperAccent(dark))
+            ?.let { Color(it) }
     } else {
         null
     }
-    val themeAccent = wallpaperAccent ?: season.accent(dark)
-    val colors = remember(dark, themeAccent) { appColors(dark, themeAccent) }
+    val themeAccent = wallpaperAccent ?: season.accent(contentDark)
+    val colors = remember(contentDark, themeAccent) { appColors(contentDark, themeAccent) }
     // 页面底色渐变与 Material 配色只在「主题 / 明暗」变化时重建。
     // 每次重组都 new 一个 Brush 会让下层所有 draw 缓存失效，等于白做优化。
-    val pageGradient = remember(season.id, dark) { Brush.verticalGradient(season.gradient(dark)) }
-    val materialScheme = remember(dark, themeAccent, colors.bgTop) {
-        if (dark) {
+    val pageGradient = remember(season.id, contentDark) {
+        Brush.verticalGradient(season.gradient(contentDark))
+    }
+    val materialScheme = remember(contentDark, themeAccent, colors.bgTop) {
+        if (contentDark) {
             darkColorScheme(primary = themeAccent, background = colors.bgTop)
         } else {
             lightColorScheme(primary = themeAccent, background = colors.bgTop)
@@ -401,11 +425,11 @@ fun MainScreen(
             ?.getInsets(androidx.core.view.WindowInsetsCompat.Type.statusBars())?.top ?: 0
         if (insetPx > 0) insetPx.toFloat() else with(density) { 24.dp.toPx() }
     }
-    DisposableEffect(dark) {
+    DisposableEffect(contentDark) {
         activity?.window?.let { window ->
             WindowCompat.getInsetsController(window, view).apply {
-                isAppearanceLightStatusBars = !dark
-                isAppearanceLightNavigationBars = !dark
+                isAppearanceLightStatusBars = !contentDark
+                isAppearanceLightNavigationBars = !contentDark
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 window.isNavigationBarContrastEnforced = false
@@ -422,7 +446,7 @@ fun MainScreen(
     BackHandler(enabled = settingsPage != null) { closeSettings() }
     BackHandler(enabled = settingsPage == null && tab != 0) { tab = 0 }
 
-    ProvideAppColors(dark = dark, accent = themeAccent) {
+    ProvideAppColors(dark = contentDark, accent = themeAccent) {
         MaterialTheme(
             colorScheme = materialScheme,
         ) {
@@ -527,12 +551,15 @@ fun MainScreen(
                     .background(pageGradient),
             ) {
                 // ---- 自定义壁纸：铺满整页（只有选中「我的壁纸」时才画）----
-                // 画在最底层、渐变之上：图的四周由自带的一层薄纱压暗，
+                // 画在最底层、渐变之上：上面那层薄纱按内容色选白/黑，
                 // 保证车名与卡片在任意壁纸上都能读清。
                 CustomWallpaperLayer(
                     runtime = runtime,
+                    // 取哪张图跟外观模式走（日间图 / 夜间图）
                     dark = dark,
                     enabled = season.custom,
+                    // 薄纱颜色跟内容色走：反色后深字配白纱、浅字配黑纱
+                    contentDark = contentDark,
                 )
 
                 // ---- 主题场景：只画在页面上半部分，往下淡出到看不见 ----
@@ -546,8 +573,9 @@ fun MainScreen(
                 val sceneAlpha: State<Float> = rememberSceneAlpha(carModelGone)
                 // ---- 雾化遮罩：以车模正中心为圆心，向外圆弧发散 ----
                 // 圆心处完全通透（车模不被压灰），越往四周越浓，屏幕顶端最浓。
-                // 取主题渐变的最顶色，画面是「淡出进背景」而不是被压上一块别的颜色。
-                val veilColor = season.gradient(dark).first()
+                // 取内容色那一档：反色后背景深浅变了，雾色也得跟着换，
+                // 否则深底上压一层浅雾，反而把车名糊掉。
+                val veilColor = season.gradient(contentDark).first()
                 val veilRadiusY = with(density) { HEADER_VEIL_RADIUS_Y.toPx() }
                 val veilCenterY = statusBarTopPx + with(density) {
                     (HEADER_VEIL_CONTENT_HEIGHT + CAR_ARTWORK_HEIGHT / 2).toPx()

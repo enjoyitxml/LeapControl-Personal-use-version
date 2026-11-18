@@ -49,12 +49,25 @@ class ParkingPhotoEnterRefreshTest {
     }
 
     @Test
-    fun `首页卡与找车页不跟着强制刷新`() {
-        // 这两个入口只在默认参数下调用 rememberParkingPhoto：不传就是 false
+    fun `找车页也进来即刷新车端照片`() {
+        // 2026-11-18 用户反馈：从首页车辆位置卡点进来的驻车照片不会自动更新。
+        // 那张卡的落点就是找车页（HomeScreen 的 else-if 链），它原来只在默认参数下
+        // 调用 rememberParkingPhoto，于是命中了「每辆车每次启动只自动取一次」的节流，
+        // 进来看到的还是上一趟停车缓存下来的那张。
         assertTrue(
-            "首页卡 / 找车页传了 refreshOfficialOnEnter，会跟着每次重组打云端",
-            !read("app/src/main/java/com/leapcontrol/app/ui/FindCarScreen.kt")
-                .contains("refreshOfficialOnEnter"),
+            "找车页没传 refreshOfficialOnEnter，从车辆位置卡进来看到的还是上一趟的车端照片",
+            read("app/src/main/java/com/leapcontrol/app/ui/FindCarScreen.kt")
+                .contains("refreshOfficialOnEnter = true"),
+        )
+    }
+
+    @Test
+    fun `首页车辆位置卡不跟车况刷新打云端`() {
+        // 首页卡常驻在首页组合树里，跟着车况反复重组；它必须只在默认参数下调用，
+        // 否则每刷一次车况就打一次照片接口，等于把「别频繁拉车况」的规矩从后门破了
+        assertTrue(
+            "首页车辆位置卡带了 refreshOfficialOnEnter，会跟着每次重组打云端",
+            state.contains("val photo = rememberParkingPhoto(runtime, onMessage)"),
         )
     }
 

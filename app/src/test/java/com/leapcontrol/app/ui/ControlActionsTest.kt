@@ -1,5 +1,6 @@
 package com.leapcontrol.app.ui
 
+import com.leapcontrol.app.VehicleCapabilities
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -40,6 +41,30 @@ class ControlActionsTest {
         assertEquals(true, ControlActions.isActive("sunshade", status(sunshadeOpen = true)))
         assertEquals(true, ControlActions.isActive("sentry", status(sentryOn = true)))
         assertEquals(false, ControlActions.isActive("sentry", status(sentryOn = false)))
+    }
+
+    @Test
+    fun `哨兵不按车型能力门禁`() {
+        // 2026-11-18 用户要求：哨兵不再判断车型是否具备这项功能。
+        // 有些车网关根本不上报 3636 信号，能力识别会判成「没这个功能」，
+        // 结果按钮连加都加不上（首页控车编辑、快捷入口都过 available 过滤）。
+        // 「没上报」不等于「不支持」，该由云端回执说话。
+        assertTrue(
+            "哨兵被车型能力挡在外面：没识别到该信号的车加不上这个按钮",
+            ControlActions.available(VehicleCapabilities.EMPTY, listOf("sentry"))
+                .any { it.id == "sentry" },
+        )
+        assertTrue(
+            "能力还没拿到（null）时哨兵也被漏掉了",
+            ControlActions.available(null, listOf("sentry")).any { it.id == "sentry" },
+        )
+        // 车况没有哨兵信号时按「开」的方向下发，与其余复合按钮一致
+        assertEquals("sentryOn", ControlActions.resolveCommand("sentry", status(sentryOn = null)))
+        // 只放开哨兵这一颗：天窗 / 前备箱的能力门禁必须还在
+        assertTrue(
+            "天窗 / 前备箱的车型能力门禁被顺手删了",
+            ControlActions.available(VehicleCapabilities.EMPTY, listOf("sunroof", "frunk")).isEmpty(),
+        )
     }
 
     @Test

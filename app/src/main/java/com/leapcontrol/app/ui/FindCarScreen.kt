@@ -179,8 +179,18 @@ fun FindCarScreen(
     // 再让他退回设置里找「车辆位置与目的地」是没有道理的。
     var showKeyHelp by remember { mutableStateOf(false) }
 
-    // 停车位照片：和首页卡共用同一套存储与拍照流程，这一页只是把图放大到 1400 好认
-    val photo = rememberParkingPhoto(runtime, onMessage, thumbSize = 1400)
+    // 停车位照片：和首页卡共用同一套存储与拍照流程，这一页只是把图放大到 1400 好认。
+    // refreshOfficialOnEnter = true：这一页是**从首页车辆位置卡点进来的二级页**，
+    // 用户来这儿就是要看「现在停在哪一格」，车端照片必须每次进来重新问一次；
+    // 不传的话会命中「每辆车每次启动只自动取一次」的节流，看到的还是上一趟停车缓存的那张
+    // （2026-11-18 用户反馈「从车辆位置卡片点击进入驻车照片不会自动更新最新的车端照片」）。
+    // 副作用按 (来源, VIN, 本开关) 做 key，因此只在进入本页时触发一次，不跟车况刷新走。
+    val photo = rememberParkingPhoto(
+        runtime,
+        onMessage,
+        thumbSize = 1400,
+        refreshOfficialOnEnter = true,
+    )
     var previewPhoto by remember { mutableStateOf(false) }
 
     // 返回键先把全屏照片 / 搜索弹层收掉，再退出本页 —— 否则一按就整页返回，
