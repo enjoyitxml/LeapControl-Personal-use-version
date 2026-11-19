@@ -1,5 +1,6 @@
 package com.leapcontrol.app.ui
 
+import android.widget.Toast
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -30,6 +31,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,8 +43,11 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
@@ -94,6 +99,7 @@ fun ChargingScreen(
     onBack: () -> Unit,
 ) {
     val C = LocalAppColors.current
+    val context = LocalContext.current
     val soc = status?.soc
 
     val chargeState = status?.chargeState
@@ -249,7 +255,19 @@ fun ChargingScreen(
                 title = "健康充电",
                 subtitle = null,
                 checked = draft.healthy,
-                onCheckedChange = { onDraftChange(draft.copy(healthy = it)) },
+                onCheckedChange = { on ->
+                    // 打开健康充电时如果上限已经是 100，自动落到 90 并告知一声：
+                    // 「健康充电」与「充满」互相矛盾，不提示的话用户会以为开关没生效
+                    val nextSoc = if (on) ChargeSchedule.onHealthyEnabled(draft.limitSoc) else draft.limitSoc
+                    if (on && nextSoc != draft.limitSoc) {
+                        Toast.makeText(
+                            context,
+                            "已调整至健康限值 ${nextSoc}%",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                    onDraftChange(draft.copy(healthy = on, limitSoc = nextSoc))
+                },
             )
             Spacer(Modifier.height(16.dp))
             Text(
@@ -261,6 +279,7 @@ fun ChargingScreen(
             Spacer(Modifier.height(6.dp))
             LimitSocSlider(
                 soc = draft.limitSoc,
+                healthyEnabled = draft.healthy,
                 onChange = { onDraftChange(draft.copy(limitSoc = it)) },
             )
         }
@@ -501,22 +520,49 @@ private fun ScheduleRow(title: String, value: String, onClick: () -> Unit) {
 }
 
 /**
- * 充电上限滑杆（80%~100%，5% 一档）。
+ * 充电上限滑杆（50%~100%，5% 一档）。
  *
  * 为什么不用 Material Slider：官方这一条要「绿色渐变轨道 + 分段白点 + 白色圆钮 +
  * 底部 90% 最佳限值三角」，用 Slider 只能改颜色，白点与三角都得另画一层，
  * 位置还容易和滑块的实际内边距错开。这里整条自绘，拖动与点击都用
  * [detectHorizontalDragGestures] / [detectTapGestures]，滑动条自身的可点性不打折。
+ *
+ * 健康充电开着的时候，100 会被吸到 95（见 [ChargeSchedule.onDragSoc]）：
+ * 100 伤电池、96..99 车端不认这一档，与其发下去再被纠正，不如手指还没松就吸住。
  */
 @Composable
-private fun LimitSocSlider(soc: Int, onChange: (Int) -> Unit) {
+private fun LimitSocSlider(
+    soc: Int,
+    healthyEnabled: Boolean,
+    onChange: (Int) -> Unit,
+) {
     val C = LocalAppColors.current
+    val context = LocalContext.current
     val density = LocalDensity.current
     val thumbRadius = 11.dp
     val fraction = ChargeSchedule.socToFraction(soc)
     val trackColor = C.barTrack
     val activeStart = if (C.isDark) Color(0xFF2E8B57) else Color(0xFF56C271)
     val activeEnd = if (C.isDark) Color(0xFF3DD68C) else Color(0xFF8FE0A4)
+    // 吸附提示限流：手指拖到顶会连着触发十几帧，不限流会刷屏
+    val lastToastAt = remember { mutableLongStateOf(0L) }
+
+    // 手指原始位置 → 真正生效的档位；被 95 吸住时提示一次
+    fun commit(rawSoc: Int) {
+        val next = ChargeSchedule.onDragSoc(rawSoc, healthyEnabled)
+        if (healthyEnabled && rawSoc >= ChargeSchedule.MAX_LIMIT_SOC && next == ChargeSchedule.HEALTHY_MAX_SOC) {
+            val now = System.currentTimeMillis()
+            if (now - lastToastAt.longValue > 1800L) {
+                lastToastAt.longValue = now
+                Toast.makeText(
+                    context,
+                    "健康充电最高限值为 ${ChargeSchedule.HEALTHY_MAX_SOC}%",
+                    Toast.LENGTH_SHORT,
+                ).show()
+            }
+        }
+        if (next != soc) onChange(next)
+    }
 
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -526,18 +572,18 @@ private fun LimitSocSlider(soc: Int, onChange: (Int) -> Unit) {
                 modifier = Modifier
                     .weight(1f)
                     .height(34.dp)
-                    .pointerInput(Unit) {
+                    .pointerInput(healthyEnabled) {
                         detectTapGestures { offset ->
                             val radius = thumbRadius.toPx()
                             val usable = (size.width - radius * 2).coerceAtLeast(1f)
-                            onChange(ChargeSchedule.fractionToSoc((offset.x - radius) / usable))
+                            commit(ChargeSchedule.fractionToSoc((offset.x - radius) / usable))
                         }
                     }
-                    .pointerInput(Unit) {
+                    .pointerInput(healthyEnabled) {
                         detectHorizontalDragGestures { change, _ ->
                             val radius = thumbRadius.toPx()
                             val usable = (size.width - radius * 2).coerceAtLeast(1f)
-                            onChange(ChargeSchedule.fractionToSoc((change.position.x - radius) / usable))
+                            commit(ChargeSchedule.fractionToSoc((change.position.x - radius) / usable))
                         }
                     },
             ) {
@@ -572,9 +618,9 @@ private fun LimitSocSlider(soc: Int, onChange: (Int) -> Unit) {
                             cornerRadius = CornerRadius(trackHeight / 2f),
                         )
                     }
-                    // 分段白点：80~100 之间的档位（85/90/95），两端是端点、不画
-                    val dotRadius = 1.6.dp.toPx()
-                    for (step in ChargeSchedule.LIMIT_STEPS.drop(1).dropLast(1)) {
+                    // 分段白点：每 10% 一个（60/70/80/90），两端不画
+                    val dotRadius = 1.9.dp.toPx()
+                    for (step in ChargeSchedule.SOC_TICKS) {
                         val x = trackStart + trackWidth * ChargeSchedule.socToFraction(step)
                         drawCircle(
                             color = Color.White.copy(alpha = if (x <= trackStart + activeWidth) 0.75f else 0.35f),

@@ -19,7 +19,7 @@ import org.json.JSONObject
 data class ChargeCenterDraft(
     /** 健康充电（电池养护）开关。 */
     val healthy: Boolean = false,
-    /** 充电上限 80..100，5% 一档。健康充电与预约充电共用同一个值。 */
+    /** 充电上限 50..100，5% 一档。健康充电与预约充电共用同一个值。 */
     val limitSoc: Int = ChargeSchedule.MAX_LIMIT_SOC,
     val scheduledEnabled: Boolean = false,
     val scheduledStart: String = "23:00",
@@ -46,6 +46,20 @@ data class ScheduledPreheatState(
 )
 
 /**
+ * 健康充电的云端策略（`healthyCharging/queryPushState`）。
+ *
+ * **充电上限的真值在这里的 `targetSoc`**。`commonConfig` 充电计划里的 `percent`
+ * 是另一份字段，实测不随用户设置变化（恒 90），拿它回填会把用户刚设的上限冲掉 ——
+ * 表现就是「调到多少，切出页面再回来又变 90」。
+ */
+data class HealthyChargePushState(
+    /** state=1 为开启；接口没给或越界时为 null，交给车况信号兜底。 */
+    val enabled: Boolean?,
+    /** 车端保存的目标 SOC；不在 50..100 时按「没读到」处理。 */
+    val targetSoc: Int?,
+)
+
+/**
  * 充电时间/周期的纯逻辑：跨天判断、摘要文案、SOC 对齐、161 days 解码。
  *
  * 这些规则都要被「页面回显」和「指令下发」同时使用，写在 UI 里两边容易算得不一样
@@ -57,17 +71,33 @@ object ChargeSchedule {
     val ALL_DAYS: Set<Int> = (1..7).toSet()
 
     /**
-     * 充电上限的下界是 **80**，不是 50。
+     * 充电上限区间 **50..100**，与上游 leapauto 的 `HealthyChargingBottomSheet` 一致。
      *
-     * 官方 App 与车机只允许 80%~100%（低于 80 的档位在两边都不存在，下发后车端也不会生效），
-     * 早期按 50 起步做滑杆，导致能选出一堆车上根本没有的值。
+     * 这里曾经卡在 80 起：车端对 80 以下的档位不一定生效，实测设 50 也可能按 80 充。
+     * 但对齐上游后滑杆从 50 起，用户能看到完整区间；低于 80 的值下发后由车端自己纠正，
+     * 回读时 [sanitizeSoc] 只做 50..100 的对齐，不再把用户选的值抹掉。
      */
-    const val MIN_LIMIT_SOC = 80
+    const val MIN_LIMIT_SOC = 50
     const val MAX_LIMIT_SOC = 100
     const val SOC_STEP = 5
 
     /** 官方把 90% 标注为「最佳限值」，页面在滑杆下方画一个小三角指到它。 */
     const val BEST_LIMIT_SOC = 90
+
+    /**
+     * 打开健康充电时，若上限已经拉到 100，自动落到 90（上游同款）。
+     *
+     * 健康充电的语义是「别充满」，100% 与它直接矛盾；与其让用户自己发现，
+     * 不如开启那一刻就改到官方推荐值。
+     */
+    const val HEALTHY_AUTO_SOC = 90
+
+    /**
+     * 健康充电开启时上限能到的最大值。
+     *
+     * 上游把它锁在 95：100 会伤害电池，96..99 车端也不认这一档。
+     */
+    const val HEALTHY_MAX_SOC = 95
 
     /** 星期选择条的显示顺序：周日打头，与官方 App 一致。 */
     val WEEKDAY_ORDER: List<Int> = listOf(7, 1, 2, 3, 4, 5, 6)
@@ -132,15 +162,56 @@ object ChargeSchedule {
     fun summaryText(start: String?, end: String?, days: Set<Int>): String =
         "${daysLabel(days)} ${rangeText(start, end)}"
 
-    /** 滑杆上的全部档位（含两端）：80 / 85 / 90 / 95 / 100。 */
+    /** 滑杆上的全部档位（含两端）：50 / 55 / … / 95 / 100，共 11 档。 */
     val LIMIT_STEPS: List<Int> = (MIN_LIMIT_SOC..MAX_LIMIT_SOC step SOC_STEP).toList()
 
-    /** 充电上限对齐到 80..100 的 5 的倍数（车端与健康充电接口都按整数百分比收）。 */
+    /**
+     * 滑杆上的刻度点：每 10% 一个。
+     *
+     * 11 档全画会糊成一条虚线，所以只标 60/70/80/90 四个整十位，
+     * 位置与上游的白色刻度柱一致。
+     */
+    val SOC_TICKS: List<Int> = listOf(60, 70, 80, 90)
+
+    /** 充电上限对齐到 50..100 的 5 的倍数（车端与健康充电接口都按整数百分比收）。 */
     fun sanitizeSoc(value: Int): Int {
         val clamped = value.coerceIn(MIN_LIMIT_SOC, MAX_LIMIT_SOC)
         val snapped = ((clamped + SOC_STEP / 2) / SOC_STEP) * SOC_STEP
         return snapped.coerceIn(MIN_LIMIT_SOC, MAX_LIMIT_SOC)
     }
+
+    /**
+     * 打开健康充电那一刻的上限：已经到 100 就自动降到 [HEALTHY_AUTO_SOC]。
+     *
+     * 只在「开关从关到开」时调用；普通回读不要用，否则用户手动拉的 100 会在
+     * 每次进入页面时被悄悄改掉。
+     */
+    fun onHealthyEnabled(currentSoc: Int): Int {
+        val current = sanitizeSoc(currentSoc)
+        return if (current >= MAX_LIMIT_SOC) HEALTHY_AUTO_SOC else current
+    }
+
+    /**
+     * 拖动滑杆时的落点：健康充电开着的时候，100 吸附到 [HEALTHY_MAX_SOC]。
+     *
+     * 关掉健康充电就不设顶部限制，可以拉满 100。
+     */
+    fun onDragSoc(rawSoc: Int, healthyEnabled: Boolean): Int {
+        val snapped = sanitizeSoc(rawSoc)
+        return if (healthyEnabled && snapped >= MAX_LIMIT_SOC) HEALTHY_MAX_SOC else snapped
+    }
+
+    /**
+     * 下发时真正写进 `targetSoc` / `chargesoc` 的值：**就是滑杆上那个数**。
+     *
+     * 这里曾经在健康充电关闭时固定成 100（照上游 `if (healthyEnabled) soc else 100`），
+     * 结果是滑杆拖到 80、界面写着「充电上限 80%」，下发却变成 100 —— 用户反馈
+     * 「上限设了不生效」就是这个。开关只该决定「要不要养护」，不该改写用户选的上限。
+     *
+     * 「关掉养护 = 允许充满」改为在界面上做：关闭开关那一刻把滑杆拉回 100，
+     * 用户想改成 80 再拖回去，所见即所发。
+     */
+    fun socForDispatch(soc: Int): Int = sanitizeSoc(soc)
 
     /** 滑杆位置（0f..1f）↔ SOC。 */
     fun socToFraction(soc: Int): Float {

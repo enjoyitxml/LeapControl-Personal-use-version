@@ -40,6 +40,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
@@ -257,16 +259,22 @@ private fun ChargeSubTopBar(title: String, onClose: () -> Unit) {
  * 一组「时 : 分」滚轮。
  *
  * [leadingLabel] 会在左侧显示「次日」之类的标记（结束时间跨零点时用）。
+ * [minuteStep] 控制分钟的档距：充电计划按 5 分钟滚，定时空调也用 5 分钟，
+ * 传 1 才是整 60 格。
  */
 @Composable
-private fun TimeWheel(
+internal fun TimeWheel(
     hour: Int,
     minute: Int,
     onHourChange: (Int) -> Unit,
     onMinuteChange: (Int) -> Unit,
     leadingLabel: String? = null,
+    minuteStep: Int = 5,
 ) {
     val C = LocalAppColors.current
+    val minuteOptions = remember(minuteStep) {
+        if (minuteStep <= 1) (0..59).toList() else (0..59 step minuteStep).toList()
+    }
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -290,7 +298,7 @@ private fun TimeWheel(
             modifier = Modifier.padding(horizontal = 4.dp),
         )
         WheelColumn(
-            items = MINUTES,
+            items = minuteOptions,
             selected = minute,
             onSelect = onMinuteChange,
             modifier = Modifier.weight(1f),
@@ -307,20 +315,36 @@ private fun TimeWheel(
  *
  * 选中值直接取 `firstVisibleItemIndex`——因为 contentPadding 恰好等于行高，
  * 第一个可见项就是正中间那一行，不需要额外换算中心坐标。
+ *
+ * 每滚过一格给一次轻触感（与上游 leapauto 一致）：滚轮没有刻度声，
+ * 不给触感的话手指要盯着数字才知道走了几格。
  */
 @Composable
-private fun WheelColumn(
+internal fun WheelColumn(
     items: List<Int>,
     selected: Int,
     onSelect: (Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val C = LocalAppColors.current
+    val haptics = LocalHapticFeedback.current
     val listState = rememberLazyListState(
         initialFirstVisibleItemIndex = items.nearestIndex(selected),
     )
     val fling = rememberSnapFlingBehavior(listState)
     val centerIndex = listState.firstVisibleItemIndex
+    // 用当前格初始化，进入页面那一下不震
+    var lastHapticIndex by remember { mutableIntStateOf(centerIndex) }
+
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.firstVisibleItemIndex }
+            .collect { index ->
+                if (index != lastHapticIndex) {
+                    lastHapticIndex = index
+                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                }
+            }
+    }
 
     // 滚动停止后把中间那一格回写成选中值，避免「视觉停在 07，实际还是 06」
     LaunchedEffect(listState) {
@@ -462,7 +486,6 @@ private fun ChargeConfirmButton(label: String, onClick: () -> Unit) {
 
 private val WheelItemHeight: Dp = 40.dp
 private val HOURS: List<Int> = (0..23).toList()
-private val MINUTES: List<Int> = (0..55 step 5).toList()
 
 /**
  * 选中值在滚轮里的落点：精确值优先，否则取最近的一档。

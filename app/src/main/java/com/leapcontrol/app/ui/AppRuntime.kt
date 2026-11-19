@@ -28,6 +28,7 @@ import com.leapcontrol.app.AmapWebApi
 import com.leapcontrol.app.ApiException
 import com.leapcontrol.app.ChargePlanCyclesHelper
 import com.leapcontrol.app.ChargeSchedule
+import com.leapcontrol.app.HealthyChargePushState
 import com.leapcontrol.app.ChargeStatus
 import com.leapcontrol.app.Commands
 import com.leapcontrol.app.ControlCommand
@@ -60,6 +61,8 @@ import com.leapcontrol.app.trip.TripSample
 import com.leapcontrol.app.trip.TripSampling
 import com.leapcontrol.app.trip.TripStartResult
 import com.leapcontrol.app.trip.TripTracker
+import com.leapcontrol.app.ScheduledAcLinkage
+import com.leapcontrol.app.ScheduledAcLinkageScheduler
 import com.leapcontrol.app.ScheduledAcPlan
 import com.leapcontrol.app.ScheduledAcState
 import com.leapcontrol.app.ScheduledPreheatState
@@ -3928,7 +3931,9 @@ class AppRuntime(context: Context) {
     ): String = withContext(Dispatchers.IO) {
         val api = LeapmotorApi(session)
         val pin = sessionStore.loadOpPassword().orEmpty()
-        val soc = ChargeSchedule.sanitizeSoc(chargeLimit)
+        // 充电上限按用户滑杆上的值下发：健康充电开关只决定 state，不参与改写 targetSoc。
+        // 以前这里在开关关闭时强制写 100，滑杆显示的 80% 永远发不出去。
+        val soc = ChargeSchedule.socForDispatch(chargeLimit)
         val results = mutableListOf<String>()
 
         // 1. 健康充电（含充电上限）
@@ -4006,6 +4011,27 @@ class AppRuntime(context: Context) {
     /** 读取车端已保存的充电计划（commonConfig config.3）。 */
     suspend fun loadChargePlan(): VehicleChargePlan? = withContext(Dispatchers.IO) {
         runCatching { LeapmotorApi(session).getVehicleChargePlan() }.getOrNull()
+    }
+
+    /**
+     * 读取健康充电的云端策略（`healthyCharging/queryPushState`）。
+     *
+     * 充电上限以这里的 `targetSoc` 为准：`commonConfig` 充电计划的 `percent`
+     * 不随设置变化，用它回填会出现「调到多少、切回来又变 90」。
+     * 接口字段名按上游取值顺序 `targetSoc` → `soc` 兜底。
+     */
+    suspend fun loadHealthyChargePushState(): HealthyChargePushState? = withContext(Dispatchers.IO) {
+        runCatching {
+            val data = LeapmotorApi(session).queryHealthyChargingPushState().optJSONObject("data")
+            val state = data?.optInt("state", -1) ?: -1
+            val soc = data?.let { it.optInt("targetSoc", it.optInt("soc", -1)) } ?: -1
+            HealthyChargePushState(
+                enabled = state.takeIf { it in 0..1 }?.let { it == 1 },
+                targetSoc = soc.takeIf {
+                    it in ChargeSchedule.MIN_LIMIT_SOC..ChargeSchedule.MAX_LIMIT_SOC
+                },
+            )
+        }.getOrNull()
     }
 
     /** 解锁充电枪物理锁止销（cmdid 192）。 */
@@ -4131,10 +4157,29 @@ class AppRuntime(context: Context) {
         runCatching { LeapmotorApi(session).getScheduledAirConditioning() }.getOrNull()
     }
 
-    /** 下发定时空调计划（plan.enabled = false 表示取消）。 */
-    suspend fun applyScheduledAc(plan: ScheduledAcPlan): String = withContext(Dispatchers.IO) {
+    /**
+     * 下发定时空调计划（plan.enabled = false 表示取消）。
+     *
+     * [linkage] 是只存本地的「到点联动」开关（关窗 / 座椅加热等），不进 171 的 controls：
+     * 车端不认识这些字段。计划本身与联动配置都在这里落到本地，接收器到点时只读本地，
+     * 不依赖网络；落盘后再重排闹钟，保证「改完设置下次就按新值跑」。
+     */
+    suspend fun applyScheduledAc(
+        plan: ScheduledAcPlan,
+        linkage: ScheduledAcLinkage = ScheduledAcLinkage.EMPTY,
+    ): String = withContext(Dispatchers.IO) {
         val pin = sessionStore.loadOpPassword() ?: throw NeedPinException()
         LeapmotorApi(session).setScheduledAirConditioning(plan, pin)
+
+        val vin = session.selectedVin.orEmpty()
+        if (vin.isNotBlank()) {
+            sessionStore.saveScheduledAcEnabled(vin, plan.enabled)
+            sessionStore.saveScheduledAcStartTime(vin, plan.startTime)
+            sessionStore.saveScheduledAcDays(vin, plan.days)
+            sessionStore.saveScheduledAcLinkage(vin, linkage)
+            ScheduledAcLinkageScheduler.reschedule(appContext, vin, plan)
+        }
+
         if (plan.enabled) "定时空调已设置（每天 ${plan.startTime}）" else "定时空调已取消"
     }
 

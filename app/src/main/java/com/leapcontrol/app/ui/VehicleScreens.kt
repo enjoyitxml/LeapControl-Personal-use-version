@@ -59,6 +59,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.leapcontrol.app.ChargePlanCyclesHelper
 import com.leapcontrol.app.ScheduledAcMode
+import com.leapcontrol.app.ScheduledAcLinkage
 import com.leapcontrol.app.ScheduledAcPlan
 import com.leapcontrol.app.VehicleOtaInfo
 import java.util.Locale
@@ -207,7 +208,13 @@ internal fun InfoCard(content: @Composable ColumnScope.() -> Unit) {
     )
 }
 
-/** 时间选择行：小时 / 分钟两个下拉，分钟按 step 步进。 */
+/**
+ * 时间选择行：标题在上、下面一组「时 : 分」滚轮。
+ *
+ * 原来是两个下拉菜单，改滚轮是为了和充电时段页统一——同一类「选时间」的动作，
+ * 在一个页面是滚轮、在另一个页面是下拉，用起来会一直在换肌肉记忆。
+ * 滚轮每过一格带一次轻触感，见 [TimeWheel]。
+ */
 @Composable
 internal fun TimePickerRow(
     label: String,
@@ -219,27 +226,20 @@ internal fun TimePickerRow(
     val parts = time.split(":")
     val hour = parts.getOrNull(0)?.toIntOrNull() ?: 0
     val minute = parts.getOrNull(1)?.toIntOrNull() ?: 0
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
+    Column(modifier = Modifier.fillMaxWidth()) {
         Text(
             text = label,
             color = C.textPrimary,
             fontSize = 15.sp,
             fontWeight = FontWeight.Medium,
-            modifier = Modifier.weight(1f),
         )
-        TimeDropdown(
-            value = hour,
-            options = (0..23).toList(),
-            onValueChange = { onTimeChange(String.format(Locale.CHINA, "%02d:%02d", it, minute)) },
-        )
-        Text(":", color = C.textPrimary, fontSize = 16.sp, modifier = Modifier.padding(horizontal = 4.dp))
-        TimeDropdown(
-            value = minute,
-            options = (0..59 step minuteStep).toList(),
-            onValueChange = { onTimeChange(String.format(Locale.CHINA, "%02d:%02d", hour, it)) },
+        Spacer(Modifier.height(6.dp))
+        TimeWheel(
+            hour = hour,
+            minute = minute,
+            minuteStep = minuteStep,
+            onHourChange = { onTimeChange(String.format(Locale.CHINA, "%02d:%02d", it, minute)) },
+            onMinuteChange = { onTimeChange(String.format(Locale.CHINA, "%02d:%02d", hour, it)) },
         )
     }
 }
@@ -375,6 +375,9 @@ fun ScheduledAcScreen(
     onReload: () -> Unit = {},
     saving: Boolean = false,
     result: String? = null,
+    /** 到点联动的本机开关（不进 171，见 [ScheduledAcLinkage]）。 */
+    linkage: ScheduledAcLinkage = ScheduledAcLinkage.EMPTY,
+    onLinkageChange: (ScheduledAcLinkage) -> Unit = {},
     onSave: () -> Unit,
     onCancel: () -> Unit,
     onBack: () -> Unit,
@@ -514,6 +517,9 @@ fun ScheduledAcScreen(
             }
         }
 
+        Spacer(Modifier.height(14.dp))
+        ScheduledAcLinkageCard(linkage = linkage, onChange = onLinkageChange)
+
         Spacer(Modifier.height(20.dp))
         Button(
             onClick = onSave,
@@ -554,10 +560,140 @@ fun ScheduledAcScreen(
     }
 }
 
+/**
+ * 定时空调的「到点联动」卡片。
+ *
+ * 这些开关**只存本机**：车端 `cmdid=171` 没有关窗 / 座椅加热这些字段，
+ * 到点是手机补发控车指令。所以卡片上必须写清「手机要联网」——
+ * 用户以为是车端自己执行的话，退出登录或没网后会以为功能坏了。
+ *
+ * 不按车型能力过滤：一项都不显示会让人以为功能没做；勾了但车不支持时，
+ * 到点会收到一条失败通知，反而比「找不到开关」更能说明问题。
+ */
+@Composable
+private fun ScheduledAcLinkageCard(
+    linkage: ScheduledAcLinkage,
+    onChange: (ScheduledAcLinkage) -> Unit,
+) {
+    val C = LocalAppColors.current
+
+    InfoCard {
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "到点联动",
+                color = C.textPrimary,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.weight(1f),
+            )
+            val count = linkage.commands().size
+            if (count > 0) {
+                Text(
+                    "已选 $count 项",
+                    color = C.accent,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                )
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "到点开空调的同时，再补发几条控车指令。指令由手机发出，需要手机保持联网；" +
+                "一项都不勾就只开空调。",
+            color = C.textSecondary,
+            fontSize = 12.sp,
+            lineHeight = 17.sp,
+        )
+
+        Spacer(Modifier.height(14.dp))
+        LinkageSection("车窗")
+        LinkageSwitchRow("关闭车窗", linkage.closeWindows) {
+            onChange(linkage.copy(closeWindows = it))
+        }
+        LinkageSwitchRow("关闭遮阳帘", linkage.closeSunshade) {
+            onChange(linkage.copy(closeSunshade = it))
+        }
+
+        Spacer(Modifier.height(12.dp))
+        LinkageSection("座椅")
+        LinkageSwitchRow("主驾座椅加热", linkage.driverHeating) {
+            onChange(linkage.copy(driverHeating = it))
+        }
+        LinkageSwitchRow("主驾座椅通风", linkage.driverVent) {
+            onChange(linkage.copy(driverVent = it))
+        }
+        LinkageSwitchRow("副驾座椅加热", linkage.passengerHeating) {
+            onChange(linkage.copy(passengerHeating = it))
+        }
+        LinkageSwitchRow("副驾座椅通风", linkage.passengerVent) {
+            onChange(linkage.copy(passengerVent = it))
+        }
+        LinkageSwitchRow("二排左座椅加热", linkage.leftRearHeating) {
+            onChange(linkage.copy(leftRearHeating = it))
+        }
+        LinkageSwitchRow("二排左座椅通风", linkage.leftRearVent) {
+            onChange(linkage.copy(leftRearVent = it))
+        }
+        LinkageSwitchRow("二排右座椅加热", linkage.rightRearHeating) {
+            onChange(linkage.copy(rightRearHeating = it))
+        }
+        LinkageSwitchRow("二排右座椅通风", linkage.rightRearVent) {
+            onChange(linkage.copy(rightRearVent = it))
+        }
+
+        Spacer(Modifier.height(12.dp))
+        LinkageSection("方向盘")
+        LinkageSwitchRow("方向盘加热", linkage.steeringWheelHeating) {
+            onChange(linkage.copy(steeringWheelHeating = it))
+        }
+    }
+}
+
+@Composable
+private fun LinkageSection(title: String) {
+    val C = LocalAppColors.current
+    Text(
+        text = title,
+        color = C.textSecondary,
+        fontSize = 12.sp,
+        fontWeight = FontWeight.Medium,
+        modifier = Modifier.padding(bottom = 2.dp),
+    )
+}
+
+@Composable
+private fun LinkageSwitchRow(
+    title: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    val C = LocalAppColors.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(40.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = title,
+            color = C.textPrimary,
+            fontSize = 14.sp,
+            modifier = Modifier.weight(1f),
+        )
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(
+                checkedTrackColor = C.accent,
+                uncheckedTrackColor = C.barTrack,
+            ),
+        )
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 车辆体检：四条系统 + 一键修复
 // ---------------------------------------------------------------------------
-
 /**
  * 车辆体检二级页：顶部评分与摘要，下方四大系统可折叠展开，异常项提供一键修复。
  * [busy] 非空表示正在下发某条修复指令（值为指令名），用于禁用该按钮。

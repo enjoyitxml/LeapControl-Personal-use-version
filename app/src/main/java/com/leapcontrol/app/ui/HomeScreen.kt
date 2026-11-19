@@ -130,6 +130,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.Canvas
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.collectAsState
+import com.leapcontrol.app.ScheduledAcLinkage
 import com.leapcontrol.app.AcSwitchIntent
 import com.leapcontrol.app.Commands
 import com.leapcontrol.app.ChargePlanCyclesHelper
@@ -181,6 +182,14 @@ private const val AC_SETTLE_DELAY_MS = 3_000L
  * 每一下 ± 都立刻改显示值，停手 400ms 才把**最后一个值**合成一条 170 下发。
  */
 private const val AC_TEMP_DEBOUNCE_MS = 400L
+
+/**
+ * 充电设置下发后的保护窗（对齐上游 `lastChargingSettingsActionEpochMs` 的 15 秒）。
+ *
+ * 车端的 `healthyCharging/queryPushState` 与充电计划都不是实时刷新，刚下发就去回读
+ * 拿到的是上一份值；用它回填会让用户看到「刚设的上限又变回 90」。
+ */
+private const val CHARGE_SYNC_GUARD_MS = 15_000L
 
 /** 充电中脉冲环扩散一圈的时长。 */
 private const val PULSE_CYCLE_MS = 2000
@@ -420,6 +429,8 @@ fun HomeScreen(
         var chargeLoading by remember { mutableStateOf(false) }
         var chargeLoadFailed by remember { mutableStateOf(false) }
         var chargeSaving by remember { mutableStateOf(false) }
+        // 上次下发成功的时刻：15 秒内以本地草稿为准，避免车端回读延迟把刚设的上限冲掉
+        var chargeSyncedAt by remember { mutableStateOf(0L) }
         var showChargeSchedule by remember { mutableStateOf(false) }
         var showPreheatSchedule by remember { mutableStateOf(false) }
         // 充电枪操作指令在 PIN 验证完成后重放
@@ -437,6 +448,14 @@ fun HomeScreen(
         var showVehicleHealth by remember { mutableStateOf(false) }
         var showOta by remember { mutableStateOf(false) }
         var acPlan by remember { mutableStateOf(com.leapcontrol.app.ScheduledAcPlan()) }
+        // 到点联动只存本机：进来时按当前 VIN 读一次，保存时跟着计划一起落盘
+        var acLinkage by remember {
+            mutableStateOf(
+                runtime.session.selectedVin?.takeIf { it.isNotBlank() }
+                    ?.let { runtime.sessionStore.loadScheduledAcLinkage(it) }
+                    ?: com.leapcontrol.app.ScheduledAcLinkage.EMPTY
+            )
+        }
         var acPlanLoading by remember { mutableStateOf(false) }
         var acPlanLoadFailed by remember { mutableStateOf(false) }
         var acPlanSaving by remember { mutableStateOf(false) }
@@ -1120,15 +1139,27 @@ fun HomeScreen(
                 runCatching { runtime.refreshStatus() }
                 val live = runtime.statusFlow.value
                 val plan = runCatching { runtime.loadChargePlan() }.getOrNull()
+                // 充电上限的真值在健康充电策略里（targetSoc），commonConfig 的 percent 不可信
+                val healthyPush = runCatching { runtime.loadHealthyChargePushState() }.getOrNull()
                 val preheat = runCatching { runtime.loadBatteryPreheatSchedule() }.getOrNull()
-                if (plan == null && preheat == null) chargeLoadFailed = true
+                if (plan == null && preheat == null && healthyPush == null) chargeLoadFailed = true
                 val current = chargeDraft
+                // 刚下发成功的 15 秒内不回读覆盖：车端 pushState 与充电计划都有延迟，
+                // 这时候读到的是旧值，会把用户刚设的上限冲回去（「切出去再回来变 90」）
+                val justSaved = System.currentTimeMillis() - chargeSyncedAt < CHARGE_SYNC_GUARD_MS
                 chargeDraft = current.copy(
-                    healthy = live?.healthyChargeEnabled ?: current.healthy,
-                    // 车端回读的 percent 也过一次 sanitizeSoc：历史遗留值（比如 50）会越界，
-                    // 不清掉就会出现「标题写 50%、圆钮却停在 80%」的矛盾
-                    limitSoc = plan?.percent?.let { ChargeSchedule.sanitizeSoc(it) }
-                        ?: current.limitSoc,
+                    healthy = when {
+                        justSaved -> current.healthy
+                        healthyPush?.enabled != null -> healthyPush.enabled
+                        else -> live?.healthyChargeEnabled ?: current.healthy
+                    },
+                    limitSoc = when {
+                        justSaved -> current.limitSoc
+                        healthyPush?.targetSoc != null -> ChargeSchedule.sanitizeSoc(healthyPush.targetSoc)
+                        // percent 只做兜底：历史遗留值可能落在 50..100 之外，要先对齐
+                        plan?.percent != null -> ChargeSchedule.sanitizeSoc(plan.percent)
+                        else -> current.limitSoc
+                    },
                     scheduledEnabled = plan?.isEnable ?: current.scheduledEnabled,
                     scheduledStart = ChargeSchedule.timeOfDay(plan?.beginTime) ?: current.scheduledStart,
                     scheduledEnd = ChargeSchedule.timeOfDay(plan?.endTime) ?: current.scheduledEnd,
@@ -1153,7 +1184,7 @@ fun HomeScreen(
                 chargeSaving = true
                 actionMessage = null
                 val draft = chargeDraft
-                actionMessage = runCatching {
+                val sent = runCatching {
                     runtime.applyChargingSettings(
                         healthyCharge = draft.healthy,
                         chargeLimit = draft.limitSoc,
@@ -1166,12 +1197,16 @@ fun HomeScreen(
                         preheatStart = draft.preheatStart,
                         preheatDays = draft.preheatDays,
                     )
-                }.fold(
+                }
+                actionMessage = sent.fold(
                     onSuccess = { "充电设置：$it" },
                     onFailure = { friendlyError(it) },
                 )
                 chargeSaving = false
-                // 下发后回读：车端可能纠正（比如设的值被取整），让界面显示车端真值
+                // 下发后 15 秒内以草稿为准：车端 pushState / 充电计划都有延迟，
+                // 立刻回读会拿到旧值，把刚设好的上限顶回 90
+                if (sent.isSuccess) chargeSyncedAt = System.currentTimeMillis()
+                // 回读：车端可能纠正（比如设的值被取整），让界面显示车端真值
                 loadChargeCenter()
             }
         }
@@ -1206,7 +1241,7 @@ fun HomeScreen(
         fun saveScheduledAc(plan: com.leapcontrol.app.ScheduledAcPlan) {
             scope.launch {
                 acPlanSaving = true
-                acPlanResult = runCatching { runtime.applyScheduledAc(plan) }
+                acPlanResult = runCatching { runtime.applyScheduledAc(plan, acLinkage) }
                     .fold(onSuccess = { it }, onFailure = { friendlyError(it) })
                 if (plan.enabled) acPlan = plan
                 acPlanSaving = false
@@ -1564,6 +1599,8 @@ fun HomeScreen(
             ScheduledAcScreen(
                 plan = acPlan,
                 onPlanChange = { acPlan = it },
+                linkage = acLinkage,
+                onLinkageChange = { acLinkage = it },
                 loading = acPlanLoading,
                 loadingFailed = acPlanLoadFailed,
                 onReload = {

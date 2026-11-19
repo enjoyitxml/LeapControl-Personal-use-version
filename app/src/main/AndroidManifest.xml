@@ -204,6 +204,24 @@
             </intent-filter>
         </receiver>
 
+        <!--
+          定时空调「到点联动」：车端 171 只负责开空调，关窗 / 座椅加热 / 方向盘加热
+          这些动作只在手机侧发起，所以需要一条自己的精确闹钟 + 接收器。
+        -->
+        <receiver
+            android:name=".ScheduledAcLinkageReceiver"
+            android:exported="false" />
+
+        <!-- 重启 / 升级后闹钟会被系统清掉，这里重新排上 -->
+        <receiver
+            android:name=".ScheduledAcLinkageBootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
         <!-- 蓝牙钥匙后台服务：连接车辆、维持无感解锁所需的 BLE 链路 -->
         <service
             android:name=".bluetooth.BleKeyService"

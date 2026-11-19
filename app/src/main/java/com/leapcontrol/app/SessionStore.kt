@@ -372,6 +372,51 @@ class SessionStore(context: Context) {
         prefs.edit().putBoolean("scheduled_ac_defrost_$vin", defrost).apply()
     }
 
+    /**
+     * 定时空调「到点联动」的开关组。
+     *
+     * 存成一整段 JSON 而不是 11 个 pref：这组开关永远是整体读写（进编辑页一次读、点保存一次写），
+     * 拆成 11 个 key 只会让读写两侧各写 11 行，以后加一项还要改两处。
+     */
+    fun loadScheduledAcLinkage(vin: String): ScheduledAcLinkage {
+        if (vin.isBlank()) return ScheduledAcLinkage.EMPTY
+        val raw = prefs.getString("scheduled_ac_linkage_$vin", null).orEmpty()
+        if (raw.isBlank()) return ScheduledAcLinkage.EMPTY
+        return runCatching {
+            val o = JSONObject(raw)
+            ScheduledAcLinkage(
+                closeWindows = o.optBoolean("closeWindows", false),
+                closeSunshade = o.optBoolean("closeSunshade", false),
+                driverHeating = o.optBoolean("driverHeating", false),
+                driverVent = o.optBoolean("driverVent", false),
+                passengerHeating = o.optBoolean("passengerHeating", false),
+                passengerVent = o.optBoolean("passengerVent", false),
+                leftRearHeating = o.optBoolean("leftRearHeating", false),
+                leftRearVent = o.optBoolean("leftRearVent", false),
+                rightRearHeating = o.optBoolean("rightRearHeating", false),
+                rightRearVent = o.optBoolean("rightRearVent", false),
+                steeringWheelHeating = o.optBoolean("steeringWheelHeating", false),
+            )
+        }.getOrDefault(ScheduledAcLinkage.EMPTY)
+    }
+
+    fun saveScheduledAcLinkage(vin: String, linkage: ScheduledAcLinkage) {
+        if (vin.isBlank()) return
+        val o = JSONObject()
+            .put("closeWindows", linkage.closeWindows)
+            .put("closeSunshade", linkage.closeSunshade)
+            .put("driverHeating", linkage.driverHeating)
+            .put("driverVent", linkage.driverVent)
+            .put("passengerHeating", linkage.passengerHeating)
+            .put("passengerVent", linkage.passengerVent)
+            .put("leftRearHeating", linkage.leftRearHeating)
+            .put("leftRearVent", linkage.leftRearVent)
+            .put("rightRearHeating", linkage.rightRearHeating)
+            .put("rightRearVent", linkage.rightRearVent)
+            .put("steeringWheelHeating", linkage.steeringWheelHeating)
+        prefs.edit().putString("scheduled_ac_linkage_$vin", o.toString()).apply()
+    }
+
     /** 用户确认的车型配置，按 VIN 隔离保存，避免多车续航规则串用。 */
     fun loadVehicleConfig(
         vin: String,
