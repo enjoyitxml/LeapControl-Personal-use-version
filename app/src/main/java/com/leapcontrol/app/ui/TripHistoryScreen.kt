@@ -34,6 +34,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -159,9 +160,15 @@ fun TripHistoryScreen(
     }
 
     var expandedId by remember { mutableStateOf<Long?>(null) }
-    // 进行中的面板默认**收起成一行**：完整面板带地图有 400dp 高，会把下面的历史清单
-    // 整块挤到屏幕外（用户 2026-11-06 截图反馈「历史行程完全被遮挡」）。
-    var liveExpanded by remember { mutableStateOf(false) }
+    // 进行中的面板默认**展开**（2026-11-20 用户要求）：进这一页多半就是想看当前这趟
+    // 跑到哪、跑了多远，先折成一行反而要多点一下。屏幕不够时点头部那行的「收起」
+    // 就能收起来，选择模式下也会强制收起（见下面 expandedId 的注释）。
+    //
+    // 用 rememberSaveable 而不是 remember：用户收起后返回首页、再进来，不该又被展开；
+    // 换一段行程（`startAt` 变化）才重置回展开 —— 上一段的收起状态不该带到下一段。
+    // 历史包袱：2026-11-06 曾因为完整面板带地图有 400dp 高、把历史清单挤出首屏而改成
+    // 默认收起；现在是整页 LazyColumn，展开后往下滚就能看到清单，不再「被遮挡」。
+    var liveExpanded by rememberSaveable(live?.startAt) { mutableStateOf(true) }
     // 紧凑条上的计时也要走：本地 10 秒 tick，不请求车况。
     var tickNow by remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
@@ -378,8 +385,8 @@ fun TripHistoryScreen(
         }
 
         // 进行中的一段不属于任何月份，也不进下面的历史清单；放在设置胶囊下面单独显示。
-        // 默认只占一行，点开才展开实时面板（地图、采样条、结束按钮都在展开态里）：
-        // 用户要的是「能看见历史清单」，不是让进行中的面板吃掉整个首屏。
+        // 默认展开实时面板（地图、采样条、结束按钮都在展开态里）；点头部那行收起后再点
+        // 就展开，切换由 liveExpanded 管，不额外加按钮占位置。
         live?.let { current ->
             Box(
                 modifier = Modifier
@@ -1145,6 +1152,16 @@ private fun TimelineRow(
                         )
                     }
                 }
+                // 展开后补充电/续航的完整口径：达成率在收起那行被省略号吃掉时，这里一定看得全
+                rangeAchievementDetail(trip.energy, trip.distanceKm)?.let { detail ->
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = detail,
+                        color = C.textSecondary,
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp,
+                    )
+                }
                 if (trip.startLabel == null || trip.endLabel == null) {
                     Spacer(Modifier.height(6.dp))
                     Text(
@@ -1182,6 +1199,8 @@ internal fun segmentFacts(trip: TripRecord): String {
     trip.averageKmh?.let { parts += "平均 ${TripFormat.speed(it)} km/h" }
     val energy = energyValue(trip.energy?.kwh, trip.energy?.usedPercent)
     if (energy != "--") parts += "耗电 $energy"
+    // 续航达成率放在里程估算前面：它是结论，后面那半句是数据口径提醒
+    trip.rangeAchievement?.let { parts += "续航达成 ${TripFormat.achievement(it)}" }
     if (trip.distanceEstimated) parts += "里程估算"
     return parts.joinToString(" · ").ifEmpty { "均速未读到" }
 }

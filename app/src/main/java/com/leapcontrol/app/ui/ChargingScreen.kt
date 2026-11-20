@@ -394,12 +394,13 @@ private fun ChargeCard(
  */
 @Composable
 internal fun ChargePanel(
+    modifier: Modifier = Modifier,
     padding: Dp = 18.dp,
     background: Color,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(18.dp))
             .background(background, RoundedCornerShape(18.dp))

@@ -164,6 +164,19 @@ fun TripLivePanel(
                 overflow = TextOverflow.Ellipsis,
             )
         }
+        // 记录中就要给续航达成率：一边开一边看得见「这趟跑得值不值」，
+        // 等结束了才显示就失去了意义（用户 2026-11-20 的要求）。
+        rangeAchievementDetail(live.energy, live.distanceKm)?.let { detail ->
+            Spacer(Modifier.height(3.dp))
+            Text(
+                text = detail,
+                color = C.textSecondary,
+                fontSize = 10.5.sp,
+                lineHeight = 15.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
         Spacer(Modifier.height(6.dp))
 
         // 首页小卡保持轻量（设计方案 ② 行程条，不放地图）；二级页给一张实时轨迹图，
@@ -506,6 +519,30 @@ internal fun energyValue(kwh: Double?, usedPercent: Double?): String = when {
  * 电量没下降（中途充过电）时明说，不给假数字；只有表显续航时退回「续航少了多少」。
  * 没有电池容量时主值只有百分比，这里不再解释 —— 设置页那一行已经写清楚了。
  */
+/**
+ * 续航达成一句话：`表显续航 420 → 388 km · 续航达成 92%`。
+ *
+ * 为什么单起一行而不塞进指标格：达成率是「这趟跑得值不值」的判断，指标格只放
+ * 一个数字会把「掉了多少续航」这个前提丢掉（92% 到底是掉了 20 km 还是 60 km？）。
+ *
+ * 没有电量读数时不重复写续航区间 —— [energyDetail] 那条分支已经写了「表显续航少了 X km」。
+ */
+internal fun rangeAchievementDetail(energy: TripEnergy?, distanceKm: Double?): String? {
+    if (energy == null) return null
+    val parts = mutableListOf<String>()
+    if (energy.startSoc != null) {
+        val from = energy.startRangeKm
+        val to = energy.endRangeKm
+        if (from != null && to != null) {
+            parts += "表显续航 ${TripFormat.km(from)} → ${TripFormat.km(to)} km"
+        }
+    }
+    energy.achievement(distanceKm)?.let {
+        parts += "续航达成 ${TripFormat.achievement(it)}"
+    }
+    return parts.joinToString(" · ").takeIf { it.isNotEmpty() }
+}
+
 internal fun energyDetail(energy: TripEnergy?): String? {
     if (energy == null) return null
     val parts = mutableListOf<String>()

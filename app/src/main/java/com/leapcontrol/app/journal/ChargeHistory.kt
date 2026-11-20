@@ -30,6 +30,13 @@ data class ChargeSession(
     val socFrom: Int? = null,
     /** 「充到 Y%」。 */
     val socTo: Int? = null,
+    /**
+     * 起点表显续航（km）。用户 2026-11-20 要求记录「续航从多少涨到多少」——
+     * 增程车不记（综合续航含油），老数据没有这一格就是 null。
+     */
+    val rangeFromKm: Double? = null,
+    /** 终点表显续航（km）：和 [socTo] 同一格。 */
+    val rangeToKm: Double? = null,
     /** 车端报过「已完成」。不一定是 100%：健康充电上限 90% 时也会报。 */
     val full: Boolean = false,
     /** 起点表显里程（km）。只用来判断两条记录是不是同一次充电被「暂停」切开的。 */
@@ -45,6 +52,21 @@ data class ChargeSession(
     val onlyPeak: Boolean
         get() = socFrom == null && (socTo != null || full)
 
+    /**
+     * 这次充进去几个百分点；说不出来（缺起点 / 缺终点 / 没涨）时为 null。
+     *
+     * 只做减法，不掺电池容量 —— 容量是用户的输入，换算成度数由
+     * [ChargeHistory.kwhOf] 现算，这样用户后来把容量填对，历史数字也跟着变对。
+     */
+    val socGain: Int?
+        get() = if (hasRange) socTo!! - socFrom!! else null
+
+    /** 表显续航涨了多少 km；两格都有且真的涨了才算。 */
+    val rangeGainKm: Double?
+        get() = if (rangeFromKm != null && rangeToKm != null) {
+            (rangeToKm - rangeFromKm).takeIf { it > 0.0 }
+        } else null
+
     /** 时长（毫秒）；结束时间不知道时为 null。 */
     val durationMs: Long?
         get() = endAt?.takeIf { it >= startAt }?.minus(startAt)
@@ -54,6 +76,8 @@ data class ChargeSession(
         endAt?.let { put("endAt", it) }
         socFrom?.let { put("socFrom", it) }
         socTo?.let { put("socTo", it) }
+        rangeFromKm?.let { put("rngFrom", it) }
+        rangeToKm?.let { put("rngTo", it) }
         if (full) put("full", true)
         km?.let { put("km", it) }
         if (edited) put("edited", true)
@@ -76,6 +100,10 @@ data class ChargeSession(
                 endAt = end,
                 socFrom = socFrom,
                 socTo = socTo,
+                rangeFromKm = raw.opt("rngFrom")?.toString()?.toDoubleOrNull()
+                    ?.takeIf { it.isFinite() && it >= 0.0 },
+                rangeToKm = raw.opt("rngTo")?.toString()?.toDoubleOrNull()
+                    ?.takeIf { it.isFinite() && it >= 0.0 },
                 full = full,
                 km = raw.opt("km")?.toString()?.toDoubleOrNull(),
                 edited = edited,
@@ -173,6 +201,8 @@ object ChargeHistory {
             endAt = end,
             socFrom = from,
             socTo = to,
+            rangeFromKm = anchor.rangeKm,
+            rangeToKm = anchor.rangePeakKm,
             full = anchor.full,
             km = anchor.km,
             edited = anchor.edited,
@@ -199,6 +229,8 @@ object ChargeHistory {
             endAt = null,
             socFrom = anchor.soc ?: soc,
             socTo = largerSoc(anchor.socPeak, soc),
+            rangeFromKm = anchor.rangeKm,
+            rangeToKm = anchor.rangePeakKm,
             full = anchor.full,
             km = anchor.km,
             edited = anchor.edited,
@@ -231,6 +263,8 @@ object ChargeHistory {
         val merged = last.copy(
             endAt = session.endAt ?: last.endAt,
             socTo = largerSoc(last.socTo, session.socTo),
+            // 续航跟着 socTo 往上走：两段里后一段才是「充到」的那一格
+            rangeToKm = largerRange(last.rangeToKm, session.rangeToKm),
             full = last.full || session.full,
         )
         return (history.dropLast(1) + merged).takeLast(MAX_ENTRIES)
@@ -250,6 +284,27 @@ object ChargeHistory {
         if (next.socFrom != null && last.socTo != null && next.socFrom > last.socTo!! + 1) return false
         if (next.socTo != null && last.socTo != null && next.socTo!! <= last.socTo!!) return false
         return true
+    }
+
+    private fun largerRange(a: Double?, b: Double?): Double? = when {
+        a == null -> b
+        b == null -> a
+        else -> maxOf(a, b)
+    }
+
+    /**
+     * 这次充电充进去多少度电（kWh）。
+     *
+     * 口径：`容量 × 充进的百分点 ÷ 100`，也就是**进电池的能量**，不含充电损耗
+     * （交流慢充全程损耗 10~15%，车端也不给这一路的计量）。所以界面上一律写「约」，
+     * 不写成「电表走了几度」。
+     *
+     * 没有电池容量、或这次记录说不清电量区间 → null，绝不拿 0 顶。
+     */
+    fun kwhOf(session: ChargeSession, capacityKwh: Double?): Double? {
+        val gain = session.socGain ?: return null
+        val capacity = capacityKwh?.takeIf { it.isFinite() && it > 0.0 } ?: return null
+        return capacity * gain / 100.0
     }
 
     private fun largerSoc(a: Int?, b: Int?): Int? = when {

@@ -1570,6 +1570,8 @@ fun HomeScreen(
                     (status?.chargeState == null && status?.charging == true),
                 now = System.currentTimeMillis(),
                 onBack = { showChargeHistory = false },
+                // 电池容量：充了几个百分点要换算成度数，只能用用户填的容量
+                batteryKwh = runtime.batteryKwh(),
             )
         } else if (showChargingCenter) {
             ChargingScreen(
@@ -2451,10 +2453,44 @@ fun HomeScreen(
         // 点「开启车载冰箱」既不弹确认框、也不变按钮文案，等退回首页才突然冒出确认框、指令到这时才发出去
         // —— 就是 2026-11-08 用户反馈的「点了没反应，返回的时候才下发」。
         // 另外这层是 Box 的最后一个子节点，叠在页面之上，结果条才不会被二级页盖住。
+        // 登录失效单独走一条路：文案本身由 [UserMessage] 统一给出，这里只判断
+        // 「这条提示要不要把用户直接送去重新登录」。
+        val bannerMessage = refreshError ?: actionMessage
+        val bannerNeedsRelogin =
+            ControlFailure.ofMessage(bannerMessage).action == ControlFix.RELOGIN
+        // 登录失效时统一成一句话：上游可能抛门禁那句、也可能抛网关那句，
+        // 用户没必要看到两种说法。右侧另挂「重新登录 ›」。
+        val bannerText = if (bannerNeedsRelogin) UserMessage.RELOGIN_MESSAGE else bannerMessage
+        // 判定成立就顺手把标记落下并叫一次弹框：主屏收到信号会**先在线核实**
+        // （可能只是 token 抖了一下），确认真的失效才弹那个关不掉的「重新登录」框。
+        // 也就是说这里不直接踢人，避免弱网下一次偶发失败就把人赶回登录页。
+        LaunchedEffect(bannerNeedsRelogin) {
+            if (bannerNeedsRelogin) {
+                runCatching { ControlFailure.markSessionExpired(coachContext) }
+            }
+        }
         ActionBanner(
-            message = refreshError ?: actionMessage,
-            isError = refreshError != null,
+            message = bannerText,
+            // 登录失效必须按「错误」上色：它多半来自动作提示（actionMessage），
+            // 而 isError 原来只看 refreshError —— 不补这一条会出现「绿勾 + 登录已过期」，
+            // 比红字更让人摸不着头脑
+            isError = refreshError != null || bannerNeedsRelogin,
             onDismiss = { actionMessage = null; refreshError = null },
+            // 点整条提示 = 直接重新登录：先退掉这个已经失效的会话（不清用户攒的位置 /
+            // 停车位照片），再回登录页。这一步和 ReloginDialog 的确认按钮完全同一套动作，
+            // 区别只是「框没弹出来时」用户仍有一条能走的路。
+            onRelogin = if (bannerNeedsRelogin) {
+                {
+                    actionMessage = null
+                    refreshError = null
+                    scope.launch {
+                        runCatching { runtime.endExpiredSession() }
+                        onLogout()
+                    }
+                }
+            } else {
+                null
+            },
         )
         // 控车二次确认弹窗（应用内确认，无指纹 / 密码验证）
         pendingConfirm?.let { (label, action) ->
@@ -3000,13 +3036,25 @@ private fun ActionBanner(
     message: String?,
     isError: Boolean,
     onDismiss: () -> Unit,
+    /**
+     * 「登录已失效」专用出口。
+     *
+     * 给了它，这条提示就**不再自动消失**，整条变成「点一下直接去重新登录」。
+     * 2026-11-20 用户反馈：登录失效时只弹一条几秒就淡掉的红字，看完还是不知道该干什么，
+     * 还得自己去「我的」翻。所以这条路径必须把动作直接摆在提示里。
+     */
+    onRelogin: (() -> Unit)? = null,
 ) {
     if (message.isNullOrBlank()) return
     val C = LocalAppColors.current
     // 自己管进出场：先淡出、再摘掉，否则 onDismiss 一调用整棵子树瞬间消失，看着像闪一下
     var shown by remember(message) { mutableStateOf(false) }
-    LaunchedEffect(message) {
+    // key 用「是不是登录失效」而不是 lambda 本身：lambda 每次重组都是新实例，
+    // 拿它当 key 会让计时器被反复重置，提示反而永远不消失
+    LaunchedEffect(message, onRelogin != null) {
         shown = true
+        // 登录失效不自动收：这条是「必须做点什么」的提示，不是「知道一下」的通知
+        if (onRelogin != null) return@LaunchedEffect
         delay(if (isError) 5_000L else 3_200L)
         shown = false
         delay(200)
@@ -3053,9 +3101,15 @@ private fun ActionBanner(
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
-                    onClick = onDismiss,
+                    // 登录失效时整条就是那个「重新登录」按钮；其余情况点一下只是收起
+                    onClick = onRelogin ?: onDismiss,
                 )
-                .padding(start = 14.dp, end = 18.dp, top = 12.dp, bottom = 12.dp),
+                .padding(
+                    start = 14.dp,
+                    end = if (onRelogin != null) 14.dp else 18.dp,
+                    top = 12.dp,
+                    bottom = 12.dp,
+                ),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // 小圆底 + 单色对勾，比原来「裸图标 + 大白底」焦点更集中
@@ -3081,7 +3135,21 @@ private fun ActionBanner(
                 fontWeight = FontWeight.Medium,
                 lineHeight = 20.sp,
                 maxLines = 3,
+                // 登录失效时右侧还要让出「重新登录 ›」，长句子得能自己收窄换行
+                modifier = if (onRelogin != null) Modifier.weight(1f, fill = false) else Modifier,
             )
+            if (onRelogin != null) {
+                Spacer(Modifier.width(10.dp))
+                // 不画成实心按钮：这条提示本身已经满宽，再塞一颗按钮会把文字挤成三行。
+                // 一排强调色的「重新登录 ›」已经足够说明「这里能点」。
+                Text(
+                    text = "重新登录 ›",
+                    color = tint,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                )
+            }
         }
     }
 }

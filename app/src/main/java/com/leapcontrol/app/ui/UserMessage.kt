@@ -24,6 +24,15 @@ object UserMessage {
     /** 兜底：宁可含糊，也不把技术原文丢给用户。 */
     const val FALLBACK = "操作没成功，请稍后重试"
 
+    /**
+     * 登录失效时的统一说法。
+     *
+     * 原来写的是「请到「我的」重新登录」—— 2026-11-20 用户反馈：这句话等于把下一步
+     * 推给用户自己去找，而首页那条提示几秒就淡掉了。现在首页的提示条本身就能点、
+     * 点完整条就是重新登录，文案不必再指路一个具体页面。
+     */
+    const val RELOGIN_MESSAGE = "登录已过期，请重新登录"
+
     private const val MAX_LEN = 60
 
     fun of(e: Throwable?, fallback: String = FALLBACK): String =
@@ -37,7 +46,7 @@ object UserMessage {
         val lower = text.lowercase()
 
         // 1) 登录态最优先：这类重试一百次也没用
-        if (ControlFailure.isAuthFailure(lower)) return "登录已过期，请到「我的」重新登录"
+        if (ControlFailure.isAuthFailure(lower)) return RELOGIN_MESSAGE
 
         // 1.5) 云端不给权限（result=40 /「无此权限」）：必须在 serverReason 之前拦下，
         //      否则首页只会显示「无此权限」四个字，用户根本不知道该做什么

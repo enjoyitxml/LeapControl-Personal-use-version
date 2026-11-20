@@ -24,11 +24,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -46,11 +48,14 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.leapcontrol.app.AppUpdateInfo
 import com.leapcontrol.app.PERSONAL_EDITION
 import com.leapcontrol.app.R
@@ -86,6 +91,8 @@ fun ProfileScreen(
     // 先吃运行时缓存：切 Tab 回来时第一帧就能显示自定义照片，不会闪一下内置头像
     var customBitmap by remember { mutableStateOf(runtime.cachedCustomAvatar()) }
     var showAvatarPicker by remember { mutableStateOf(false) }
+    // 账号 / 车架号详情：从头像卡点开（2026-11-20 用户要求把常驻的账号卡收进去）
+    var showAccountDetail by remember { mutableStateOf(false) }
 
     // ---- 检查更新（从「关于」页上移到本页）----
     // 自动检查的结果来自 AppRuntime；这里只管「用户手动点了一次」的中间态与弹窗。
@@ -158,7 +165,10 @@ fun ProfileScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(LocalAppColors.current.panelBg, RoundedCornerShape(20.dp))
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(LocalAppColors.current.panelBg)
+                    // 整卡可点：登录账号与完整车架号收进详情弹窗（2026-11-20 用户要求）
+                    .clickable { showAccountDetail = true }
                     .padding(horizontal = 14.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -182,17 +192,28 @@ fun ProfileScreen(
                     // 接口下发的是项目代号（Lafa5 是 B05），直接摆出来车主不认识
                     val rawModel = runtime.vehicleModel()
                     val model = if (rawModel.isBlank()) "" else VehicleModels.displayName(rawModel)
-                    Text(
-                        text = listOfNotNull(
-                            model.takeIf { it.isNotBlank() },
-                            runtime.session.selectedVin.takeLast(6).takeIf { it.isNotBlank() }
-                                ?.let { "VIN $it" },
-                        ).joinToString(" · ").ifEmpty { "暂无车辆信息" },
-                        color = LocalAppColors.current.textSecondary,
-                        fontSize = 11.5.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = listOfNotNull(
+                                model.takeIf { it.isNotBlank() },
+                                runtime.session.selectedVin.takeLast(6).takeIf { it.isNotBlank() }
+                                    ?.let { "VIN $it" },
+                            ).joinToString(" · ").ifEmpty { "暂无车辆信息" },
+                            color = LocalAppColors.current.textSecondary,
+                            fontSize = 11.5.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                        Spacer(Modifier.width(2.dp))
+                        // 一个很轻的箭头：告诉用户这张卡还能点开看账号与完整车架号
+                        Icon(
+                            Icons.Filled.KeyboardArrowRight,
+                            contentDescription = "查看账号与车架号",
+                            tint = LocalAppColors.current.textSecondary.copy(alpha = 0.65f),
+                            modifier = Modifier.size(14.dp),
+                        )
+                    }
                 }
                 Spacer(Modifier.width(10.dp))
                 // 退出登录：放在车名容器右侧
@@ -358,6 +379,21 @@ fun ProfileScreen(
 
             Spacer(Modifier.height(10.dp))
 
+            if (showAccountDetail) {
+                AccountDetailDialog(
+                    // 手机号仍然脱敏：这张弹窗一样会被截图发给别人
+                    account = AccountDisplay.reveal(
+                        AccountDisplay.maskPhone(runtime.session.phone),
+                        placeholder = "未取到账号",
+                    ),
+                    vin = AccountDisplay.reveal(
+                        AccountDisplay.normalizeVin(runtime.session.selectedVin),
+                        placeholder = "未选择车辆",
+                    ),
+                    onDismiss = { showAccountDetail = false },
+                )
+            }
+
             if (showAvatarPicker) {
                 AvatarPickerDialog(
                     current = AvatarChoice.decode(avatarRaw),
@@ -460,6 +496,144 @@ fun ProfileScreen(
                 onPicked = { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() },
             )
         }
+    }
+}
+
+/**
+ * 「账号与车辆」详情弹窗。
+ *
+ * 这两行原来常驻成一张卡挂在头像卡下面；2026-11-20 用户要求收进头像卡、点一下才看。
+ * 平时的确只看一眼，但报故障 / 找客服要念完整车架号，所以入口必须留着 ——
+ * 车名下面那行末尾的小箭头就是入口的提示。
+ *
+ * 手机号保持脱敏：这张弹窗同样会被截图发出去。
+ */
+@Composable
+private fun AccountDetailDialog(
+    account: String,
+    vin: String,
+    onDismiss: () -> Unit,
+) {
+    val C = LocalAppColors.current
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.45f))
+                .clickable(onClick = onDismiss),
+            contentAlignment = Alignment.Center,
+        ) {
+            Surface(
+                shape = RoundedCornerShape(22.dp),
+                color = C.dialogBg,
+                shadowElevation = 20.dp,
+                // 卡片自身吃掉点击，避免穿透到遮罩把弹窗关掉
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 22.dp)
+                    .clickable(onClick = {}),
+            ) {
+                Column(modifier = Modifier.padding(horizontal = 18.dp, vertical = 18.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "账号与车辆",
+                                color = C.textPrimary,
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "找客服或报故障时，把车架号整串念给对面",
+                                color = C.textSecondary,
+                                fontSize = 11.5.sp,
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size(28.dp)
+                                .clip(CircleShape)
+                                .background(C.chipBg)
+                                .clickable(onClick = onDismiss),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                Icons.Filled.Close,
+                                contentDescription = "关闭",
+                                tint = C.textSecondary,
+                                modifier = Modifier.size(15.dp),
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(16.dp))
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(C.chipBg)
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                    ) {
+                        AccountInfoRow(label = "登录账号", value = account)
+                        Spacer(Modifier.height(9.dp))
+                        AccountInfoRow(label = "车架号", value = vin, monospace = true)
+                    }
+                    Spacer(Modifier.height(14.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(38.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(C.accent)
+                            .clickable(onClick = onDismiss),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            "知道了",
+                            color = readableOn(C.accent),
+                            fontSize = 13.5.sp,
+                            fontWeight = FontWeight.Medium,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 账号卡里的一行：左侧标签固定宽度、右侧值单行省略。
+ *
+ * 标签宽度写死 58dp 是为了让「登录账号」「车架号」两行的值左缘对齐 ——
+ * 这两行本来就是一张对照表，值参差不齐会显得整卡很乱。
+ */
+@Composable
+private fun AccountInfoRow(
+    label: String,
+    value: String,
+    /** 车架号用等宽字体：17 位字母数字混排，等宽后面 6 位更容易逐位核对。 */
+    monospace: Boolean = false,
+) {
+    val C = LocalAppColors.current
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            label,
+            color = C.textSecondary,
+            fontSize = 11.5.sp,
+            modifier = Modifier.width(58.dp),
+        )
+        Text(
+            value,
+            color = C.textPrimary,
+            fontSize = 12.5.sp,
+            fontWeight = FontWeight.Medium,
+            fontFamily = if (monospace) FontFamily.Monospace else null,
+            letterSpacing = if (monospace) 0.2.sp else 0.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

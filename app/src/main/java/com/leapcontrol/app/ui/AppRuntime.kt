@@ -2274,6 +2274,9 @@ class AppRuntime(context: Context) {
         chargeState = status.chargeState,
         soc = status.soc,
         totalKm = OwnershipStats.kmFromText(status.totalMileage),
+        // 表显续航：和行程采样同一个口径（增程车的综合续航含油，不能当电续航）
+        rangeKm = if (status.isRangeExtender) null
+        else OwnershipStats.kmFromText(status.range),
         moving = status.isDriving == true,
         evidence = ChargeCycle.evidence(
             inputOn = chargeInputOn(st),
@@ -3499,7 +3502,7 @@ class AppRuntime(context: Context) {
      * 发一条控车指令，失败时顺手记下「登录态没了」。
      *
      * 为什么要在发完之后再看一眼：App 内的失败提示走 [UserMessage]，用户能看到
-     * 「登录已过期，请到我的重新登录」，但**标记没落下** —— 于是桌面卡片照旧显示正常车况、
+     * 「登录已过期，请重新登录」，但**标记没落下** —— 于是桌面卡片照旧显示正常车况、
      * 下一次点击还会再发一遍、再等一遍超时。写一次标记，三处入口（App / 磁贴 / 桌面卡片）
      * 就都同步知道该去重新登录了。
      *

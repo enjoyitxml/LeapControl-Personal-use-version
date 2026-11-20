@@ -161,6 +161,27 @@ data class TripEnergy(
     /** 能耗数字是不是来自云端累计口径（界面据此标「云端 / 估算」）。 */
     val fromCloud: Boolean get() = source == "cloud"
 
+    /**
+     * **续航达成率** = 实际行驶里程 ÷ 表显续航消耗。
+     *
+     * 这是车主最关心的一件事：表显掉了 100 km、实际只跑了 80 km，达成率就是 80%。
+     * 100% 说明表显准，低于 100% 说明这段路费电（高速、开空调、爬坡、低温）。
+     *
+     * 三个门槛，缺一不可 —— 少一个就会给出会误导人的数字：
+     *  - 要有表显续航的两端（[rangeUsedKm]），增程车没有（综合续航含油，混在一起算没意义）；
+     *  - 里程必须真的算出来了（[distanceKm] 由调用方给，0 或 null 都不算）；
+     *  - 比值落在 0.1~5.0 之外一律判为不可信：只跑 200 米但续航掉了 8 km（表显是按
+     *    整公里跳的）会算出 2%，那不是「续航虚」，是分辨率不够。
+     */
+    fun achievement(distanceKm: Double?): Double? {
+        val used = rangeUsedKm?.takeIf { it.isFinite() && it > 0.0 } ?: return null
+        val km = distanceKm?.takeIf { it.isFinite() && it > 0.0 } ?: return null
+        val ratio = km / used
+        return ratio.takeIf {
+            it.isFinite() && it in TripRules.MIN_ACHIEVEMENT..TripRules.MAX_ACHIEVEMENT
+        }
+    }
+
     fun toJson(): JSONObject = JSONObject().apply {
         startSoc?.let { put("ssoc", it) }
         endSoc?.let { put("esoc", it) }
@@ -251,6 +272,13 @@ data class TripRecord(
 ) {
     /** 显示与计时统一用它；读不到出发时刻才退回采样窗口起点。 */
     val effectiveStartAt: Long get() = departureAt ?: startAt
+
+    /**
+     * 续航达成率（倍数，1.0 = 100%）。口径见 [TripEnergy.achievement]。
+     * 老数据没有续航两格时为 null —— 界面写「--」，不编一个数。
+     */
+    val rangeAchievement: Double?
+        get() = energy?.achievement(distanceKm)
 
     /** 有效行驶时长：扣掉手动暂停的那几段（[pausedMs]）。 */
     val durationMs: Long get() = (endAt - effectiveStartAt - pausedMs).coerceAtLeast(0L)
@@ -539,6 +567,13 @@ data class TripLive(
     /** 计时基准：优先用起步时刻，读不到才退回采样窗口起点。 */
     val effectiveStartAt: Long get() = departureAt ?: startAt
 
+    /**
+     * 续航达成率（倍数）。记录中就要显示 —— 一边开一边看「这趟跑得值不值」，
+     * 等结束了才给就没意义了。数据不全时为 null。
+     */
+    val rangeAchievement: Double?
+        get() = energy?.achievement(distanceKm)
+
     /** 是否正处在「用户暂停」状态。 */
     val manualPaused: Boolean get() = manualPausedAt != null
 
@@ -679,6 +714,16 @@ object TripRules {
     /** 电池容量的合理区间（kWh）：小于 5 或大于 200 的乘用车电池都不存在。 */
     const val MIN_BATTERY_KWH = 5.0
     const val MAX_BATTERY_KWH = 200.0
+
+    /**
+     * 续航达成率的可信区间（倍数，不是百分比）。
+     *
+     * 下限 0.1：表显续航按整公里跳，只跑 200 米却掉了 8 km 会算出 2.5%，
+     * 那不是「续航虚」，是分辨率不够；上限 5.0 挡掉「续航掉了 1 km 硬跑了 40 km」
+     * 这类脏数据（多半是中途充过电或续航信号串了）。
+     */
+    const val MIN_ACHIEVEMENT = 0.1
+    const val MAX_ACHIEVEMENT = 5.0
 
     /**
      * 挡位 D/R/N 或速度达到 [MIN_DRIVING_KMH] 才算在开。速度 >0 会把信号噪声当成在开车。
@@ -1627,6 +1672,18 @@ object TripFormat {
         if (value == null || !value.isFinite() || value < 0.0) return "--"
         return String.format(Locale.CHINA, "%.1f", value)
     }
+
+    /**
+     * 续航达成率：倍数 → 百分比整数，`96%`；没有值给 `--`。
+     *
+     * 只取整不保留小数：这个数的误差本来就有几个百分点（表显续航按整公里跳），
+     * 写成 `96.3%` 会让人以为精确到 0.1。
+     */
+    fun achievement(ratio: Double?): String {
+        if (ratio == null || !ratio.isFinite() || ratio <= 0.0) return "--"
+        return String.format(Locale.CHINA, "%.0f%%", ratio * 100.0)
+    }
+
     fun monthNow(now: Long): String = monthKey(now)
 
     /**

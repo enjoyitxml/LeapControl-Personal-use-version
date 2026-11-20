@@ -30,8 +30,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -45,16 +49,17 @@ import com.leapcontrol.app.trip.TripRecord
 import com.leapcontrol.app.trip.TripRules
 import com.leapcontrol.app.trip.TripSample
 import com.leapcontrol.app.trip.TripSampling
+import com.leapcontrol.app.trip.TripShape
 import com.leapcontrol.app.trip.TripStartResult
 import kotlinx.coroutines.delay
 
 /**
- * 零控首页「行程轨迹」小卡（设计方案 ② 行程条）。
+ * 零控首页「行程轨迹」小卡（设计方案 ② 行程条 + 2026-11-20 的速度曲线改版）。
  *
  * 版式：有进行中的行程时优先显示实时面板（可手动结束），否则是
- * 标题 → 起终点 → 采样点时间轴 → 四项指标 → 一行数据口径说明。
- * 行程条按时间分桶示意采样分布（最多 6 个刻度），不是连续路线；
- * 这一点必须在卡上写清楚，否则用户会以为是高德那种完整轨迹。
+ * 标题 → 时间与里程 → 速度曲线 → 起终点 → 三格指标 → 一句节奏摘要。
+ * 曲线是**按采样时间排布的车速折线**，不是地图上的路线；采样点不足三个时
+ * 退回采样分布条。这一点必须在卡上写清楚，否则用户会以为是高德那种完整轨迹。
  */
 @Composable
 fun TripTrackCard(
@@ -174,12 +179,11 @@ fun TripTrackCard(
 
             else -> {
                 TripHeadline(trip, C.textPrimary, C.textSecondary)
-                Spacer(Modifier.height(4.dp))
-                TripSampleStrip(
+                Spacer(Modifier.height(6.dp))
+                TripSpeedTrend(
                     points = trip.points,
                     accent = C.accent,
                     track = C.barTrack,
-                    modifier = Modifier.fillMaxWidth().height(18.dp),
                 )
                 Spacer(Modifier.height(7.dp))
                 // 起终点各占一头：起点圆点在左、终点圆点在右，地址各自封顶后省略。
@@ -198,7 +202,15 @@ fun TripTrackCard(
                         energyValue(trip.energy?.kwh, trip.energy?.usedPercent),
                         "耗电",
                     )
+                    MetricDivider()
+                    // 续航达成率：实际里程 ÷ 表显续航消耗。数据不全时写 --，
+                    // 这一格常驻，位置固定，不会因为某趟读不到续航就左右乱跳。
+                    TripMetric(
+                        TripFormat.achievement(trip.rangeAchievement),
+                        "续航达成",
+                    )
                 }
+                TripSummaryLine(trip.points, C.textSecondary)
             }
         }
 
@@ -405,7 +417,150 @@ private fun MetricDivider() {
 }
 
 /**
+ * 行程形状（2026-11-20 用户选定的「①+⑤ 组合」）：上面一条速度曲线、下面一句摘要。
+ *
+ * 旧版这里只画采样点分布，一趟跑完和一趟没跑看起来一样。现在换成速度曲线：
+ * 横轴是时间、纵轴是车速 —— 堵着就贴底、跑起来就拱上去，形状本身就是反馈。
+ *
+ * 速度点不足三个（短行程 / 信号没读到）时**退回原来的采样条**：两三个点画出来
+ * 只是一条斜线，比灰条更容易误解成「全程匀速」。
+ */
+@Composable
+private fun TripSpeedTrend(
+    points: List<TripSample>,
+    accent: Color,
+    track: Color,
+    modifier: Modifier = Modifier,
+) {
+    val curve = remember(points) { TripShape.curve(points) }
+    if (curve != null) {
+        TripSpeedCurve(
+            curve = curve,
+            accent = accent,
+            track = track,
+            modifier = modifier.fillMaxWidth().height(34.dp),
+        )
+    } else {
+        TripSampleStrip(
+            points = points,
+            accent = accent,
+            track = track,
+            modifier = modifier.fillMaxWidth().height(18.dp),
+        )
+    }
+}
+
+/**
+ * 速度曲线：淡基线 + 折线 + 渐变填充，两端各一个主色圆点。
+ *
+ * 高度由调用方给（34dp）：18dp 装不下「快慢起伏」，曲线会被压成一条几乎平的线。
+ * 线宽 1.8dp、填充从 24% 渐隐到 2%，压在卡片浅底上不会糊成一团深色。
+ */
+@Composable
+internal fun TripSpeedCurve(
+    curve: TripShape.Curve,
+    accent: Color,
+    track: Color,
+    modifier: Modifier = Modifier,
+) {
+    Canvas(modifier = modifier) {
+        val pts = curve.points
+        if (pts.isEmpty()) return@Canvas
+        val padX = 4.dp.toPx()
+        val left = padX
+        val right = (size.width - padX).coerceAtLeast(left)
+        val width = right - left
+        val baseY = size.height - 1.5.dp.toPx()
+        val topPad = 3.dp.toPx()
+        val usable = (baseY - topPad).coerceAtLeast(1f)
+
+        fun xOf(at: Float): Float = left + width * at.coerceIn(0f, 1f)
+        fun yOf(point: TripShape.CurvePoint): Float = baseY - usable * curve.ratio(point)
+
+        // 极淡基线：速度为 0 时曲线会压在它上面，有条参照才知道「到底动了没有」
+        drawLine(
+            color = track.copy(alpha = 0.55f),
+            start = Offset(left, baseY),
+            end = Offset(right, baseY),
+            strokeWidth = 1.dp.toPx(),
+            cap = StrokeCap.Round,
+        )
+
+        val line = Path()
+        val area = Path()
+        pts.forEachIndexed { i, point ->
+            val x = xOf(point.at)
+            val y = yOf(point)
+            if (i == 0) {
+                line.moveTo(x, y)
+                area.moveTo(x, baseY)
+                area.lineTo(x, y)
+            } else {
+                line.lineTo(x, y)
+                area.lineTo(x, y)
+            }
+        }
+        area.lineTo(xOf(pts.last().at), baseY)
+        area.close()
+
+        drawPath(
+            path = area,
+            brush = Brush.verticalGradient(
+                colors = listOf(accent.copy(alpha = 0.24f), accent.copy(alpha = 0.02f)),
+                startY = topPad,
+                endY = baseY,
+            ),
+        )
+        drawPath(
+            path = line,
+            color = accent,
+            style = Stroke(
+                width = 1.8.dp.toPx(),
+                cap = StrokeCap.Round,
+                join = StrokeJoin.Round,
+            ),
+        )
+
+        // 首尾圆点与旧采样条同款，视觉上仍能认出这是同一张卡上的那条
+        listOf(pts.first(), pts.last()).forEach { point ->
+            drawCircle(
+                color = accent,
+                radius = 2.6.dp.toPx(),
+                center = Offset(xOf(point.at), yOf(point)),
+            )
+        }
+    }
+}
+
+/**
+ * 摘要行（①+⑤ 里的 ⑤）：`行驶 21 分 · 停 6 次共 12 分 · 最高 78`。
+ *
+ * 挂在指标行下方：那三格讲的是「跑了多久 / 多快 / 耗多少」，这一行补的是
+ * 「堵不堵」—— 同一趟跑 33 分钟，全程高速和堵了 12 分钟，指标完全一样，
+ * 但用户的体感天差地别。数据不足时整行不出，不留空位。
+ */
+@Composable
+private fun TripSummaryLine(points: List<TripSample>, color: Color) {
+    val text = remember(points) {
+        TripShape.rhythm(points)?.let { TripShape.summaryText(it) }
+    }
+    if (text == null) return
+    Spacer(Modifier.height(5.dp))
+    Text(
+        text = text,
+        color = color,
+        fontSize = 10.5.sp,
+        lineHeight = 15.sp,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+    )
+}
+
+/**
  * 行程条（设计方案 ②）：一条干净的实心圆角细条 + 起终点主色圆点 + **最多 6 个**采样刻度。
+ *
+ * 2026-11-20 起首页卡的默认展示换成了 [TripSpeedCurve]，这条只在速度点不足时兜底；
+ * 行程二级页、实时面板、零记小卡仍在用它。
  *
  * 旧版把每个采样点都画成圆点、底下再垫一条虚线：一趟 99 个点挤在 18dp 高的条上，
  * 虚线和灰点叠成一片，真机上就是用户说的「跟马赛克一样」。现在：

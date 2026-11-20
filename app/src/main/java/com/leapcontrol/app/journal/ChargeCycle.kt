@@ -36,6 +36,19 @@ data class ChargeAnchor(
     /** 「充到 Y%」：这次充电的满电电量（%），没观测到就 null。 */
     val socPeak: Int? = null,
     /**
+     * 充电起点的**表显续航**（km）。
+     *
+     * 用户 2026-11-20 要求「充电记录不光记百分比，还要记表显续航从多少涨到多少」——
+     * 百分比是电池口径，续航是车主实际看到的那个数（还会随工况口径变，CLTC / WLTC
+     * 同一个电量能差几十公里）。两个都记，才解释得清「充了 30% 到底是 150 还是 200 公里」。
+     *
+     * 增程车不记：那种车的主续航是「电 + 油」综合值，拿它当电续航是错的，
+     * 口径与 [com.leapcontrol.app.trip.TripSample.rangeKm] 保持一致。
+     */
+    val rangeKm: Double? = null,
+    /** 这次充电**充到**的表显续航（km）：跟 [socPeak] 同一格，只涨不跌。 */
+    val rangePeakKm: Double? = null,
+    /**
      * 车端报告这次充电「已完成」（`chargeState=2`，且车还在原地）。
      *
      * 它只说明充到了车端认定的终点，**不含具体百分比**：健康充电上限设成 90% 时
@@ -83,6 +96,8 @@ data class ChargeAnchor(
         put("at", at)
         soc?.let { put("soc", it) }
         socPeak?.let { put("socPeak", it) }
+        rangeKm?.let { put("rng", it) }
+        rangePeakKm?.let { put("rngPeak", it) }
         if (full) put("full", true)
         if (manual) put("manual", true)
         if (edited) put("edited", true)
@@ -103,6 +118,8 @@ data class ChargeAnchor(
                 at = at,
                 soc = raw.opt("soc")?.toString()?.toIntOrNull()?.takeIf { it in 0..100 },
                 socPeak = raw.opt("socPeak")?.toString()?.toIntOrNull()?.takeIf { it in 0..100 },
+                rangeKm = raw.opt("rng")?.toString()?.toDoubleOrNull()?.takeIf { it > 0.0 },
+                rangePeakKm = raw.opt("rngPeak")?.toString()?.toDoubleOrNull()?.takeIf { it > 0.0 },
                 full = raw.optBoolean("full", false),
                 manual = raw.optBoolean("manual", false),
                 edited = raw.optBoolean("edited", false),
@@ -148,6 +165,11 @@ data class ChargeSample(
     val soc: Int?,
     /** 表显总里程（km）。 */
     val totalKm: Double?,
+    /**
+     * 表显剩余续航（km）。只用来记「充到多少公里」——
+     * 增程车传 null（综合续航含油，不能当电续航），口径同行程采样。
+     */
+    val rangeKm: Double? = null,
     /**
      * 车在动（车速 > 0 或挂在 D / R 挡）。
      *
@@ -308,6 +330,14 @@ object ChargeCycle {
         km != null && km.isFinite() && km > 0.0 && km < MAX_KM
 
     /**
+     * 表显续航能不能记。
+     *
+     * 与里程不同，续航可以是 0（真的开到没电了还插着枪），所以只挡负数与离谱值。
+     */
+    private fun usableRange(range: Double?): Double? =
+        range?.takeIf { it.isFinite() && it >= 0.0 && it < MAX_KM }
+
+    /**
      * 把报文里几路信号折成一条「充电是否真的在发生」的判断。
      *
      * @param inputOn 交流 / 直流输入信号：任一为真有电 = true；两路都明确为 0 = false；其余 null
@@ -365,6 +395,7 @@ object ChargeCycle {
                     km = seenKm,
                     at = now,
                     soc = sample.soc?.takeIf { it in 0..100 },
+                    rangeKm = usableRange(sample.rangeKm),
                     lastChargingAt = now,
                 ),
                 pending = null,
@@ -373,12 +404,14 @@ object ChargeCycle {
 
         val km = sample.totalKm?.takeIf { isUsableKm(it) }
         val soc = sample.soc?.takeIf { it in 0..100 }
+        val range = usableRange(sample.rangeKm)
 
         val settled = settlePending(current, chargeState, soc, km, now)
         val next = when {
-            chargeState in CHARGING_STATES -> observeCharging(settled, soc, km, sample.evidence, now)
-            chargeState == STATE_DONE -> observeDone(settled, soc, km, now)
-            else -> closeCurrent(settled, soc, km, now)
+            chargeState in CHARGING_STATES ->
+                observeCharging(settled, soc, km, range, sample.evidence, now)
+            chargeState == STATE_DONE -> observeDone(settled, soc, km, range, now)
+            else -> closeCurrent(settled, soc, km, range, now)
         }
         return next.takeIf { it != current }
     }
@@ -421,6 +454,7 @@ object ChargeCycle {
         state: ChargeCycleState,
         soc: Int?,
         km: Double?,
+        range: Double?,
         evidence: ChargeEvidence,
         now: Long,
     ): ChargeCycleState {
@@ -429,7 +463,13 @@ object ChargeCycle {
 
         val anchor = state.anchor
             ?: return state.copy(
-                anchor = ChargeAnchor(km = km, at = now, soc = soc, lastChargingAt = now),
+                anchor = ChargeAnchor(
+                    km = km,
+                    at = now,
+                    soc = soc,
+                    rangeKm = range,
+                    lastChargingAt = now,
+                ),
             )
 
         val sameSpot = abs(anchor.km - km) <= MOVE_TOLERANCE_KM
@@ -437,7 +477,8 @@ object ChargeCycle {
         // 同一次充电（车没动、也还没收尾）：起点里程与时刻都不能被推着走，
         // 只把「充到多少」抬到看过的最高那格。
         if (sameSpot && !anchor.ended) {
-            val raised = raiseChargeLevel(anchor, soc, reachedFull = false, parked = true) ?: anchor
+            val raised = raiseChargeLevel(anchor, soc, range, reachedFull = false, parked = true)
+                ?: anchor
             // 「最后一次看见在充电」每看一次就刷新一次：充电历史的结束时间靠它。
             // 固定 1 分钟一采，换来的是一条误差不超过 1 分钟的结束时间，值得。
             return state.copy(anchor = raised.copy(lastChargingAt = now))
@@ -449,7 +490,13 @@ object ChargeCycle {
         val harmless = sameSpot && evidence != ChargeEvidence.REFUTED
         if (harmless || evidence == ChargeEvidence.CONFIRMED) {
             return ChargeCycleState(
-                anchor = ChargeAnchor(km = km, at = now, soc = soc, lastChargingAt = now),
+                anchor = ChargeAnchor(
+                    km = km,
+                    at = now,
+                    soc = soc,
+                    rangeKm = range,
+                    lastChargingAt = now,
+                ),
                 pending = null,
             )
         }
@@ -459,7 +506,7 @@ object ChargeCycle {
 
         // 车动过、又没有旁证：这次「充电」很可能是 chargeState 的残影。
         // 不猜、也不丢 —— 挂成候选，等电量真的涨上来再转正。
-        return state.copy(pending = ChargeAnchor(km = km, at = now, soc = soc))
+        return state.copy(pending = ChargeAnchor(km = km, at = now, soc = soc, rangeKm = range))
     }
 
     /**
@@ -471,6 +518,7 @@ object ChargeCycle {
         state: ChargeCycleState,
         soc: Int?,
         km: Double?,
+        range: Double?,
         now: Long,
     ): ChargeCycleState {
         if (km == null) return state
@@ -480,6 +528,7 @@ object ChargeCycle {
                     km = km,
                     at = now,
                     socPeak = soc,
+                    rangePeakKm = range,
                     full = true,
                     endedAt = now,
                 ),
@@ -491,7 +540,8 @@ object ChargeCycle {
         // 车没动过：还是同一次充电，把电量抬到这一格并记下「到顶了」。
         // 以前这里会因为「已收尾」而重开一个起点，顺手把「从 X% 充起」丢掉。
         if (abs(km - anchor.km) <= MOVE_TOLERANCE_KM) {
-            val raised = raiseChargeLevel(anchor, soc, reachedFull = true, parked = true) ?: anchor
+            val raised = raiseChargeLevel(anchor, soc, range, reachedFull = true, parked = true)
+                ?: anchor
             // 看到 2 = 车端已经停充，这是最早能确认「这次充电结束了」的时刻
             return state.copy(anchor = raised.copy(endedAt = raised.endedAt ?: now))
         }
@@ -510,6 +560,7 @@ object ChargeCycle {
         state: ChargeCycleState,
         soc: Int?,
         km: Double?,
+        range: Double?,
         now: Long,
     ): ChargeCycleState {
         val anchor = state.anchor ?: return state
@@ -518,7 +569,10 @@ object ChargeCycle {
         val parked = km != null && abs(km - anchor.km) <= MOVE_TOLERANCE_KM
         // endedAt 只记「什么时候发现它停了」；充电历史里的结束时间优先用 lastChargingAt
         val ended = anchor.copy(ended = true, endedAt = anchor.endedAt ?: now)
-        return state.copy(anchor = raiseChargeLevel(ended, soc, reachedFull = false, parked = parked) ?: ended)
+        return state.copy(
+            anchor = raiseChargeLevel(ended, soc, range, reachedFull = false, parked = parked)
+                ?: ended,
+        )
     }
 
     /**
@@ -532,6 +586,7 @@ object ChargeCycle {
     private fun raiseChargeLevel(
         anchor: ChargeAnchor,
         soc: Int?,
+        range: Double?,
         reachedFull: Boolean,
         parked: Boolean,
     ): ChargeAnchor? {
@@ -540,6 +595,11 @@ object ChargeCycle {
         val peak = anchor.socPeak
         if (soc != null && soc in 0..100 && (peak == null || soc > peak)) {
             next = next.copy(socPeak = soc)
+        }
+        // 表显续航和电量一起抬：两格来自同一帧，拆开记会对不上（充到 90% 却只有 300 km）
+        val rangePeak = anchor.rangePeakKm
+        if (range != null && (rangePeak == null || range > rangePeak)) {
+            next = next.copy(rangePeakKm = range)
         }
         if (reachedFull && !anchor.full) next = next.copy(full = true)
         return if (next == anchor) null else next

@@ -776,15 +776,10 @@ private fun AppIconOption(
                 contentScale = ContentScale.Fit,
                 modifier = Modifier
                     .fillMaxSize()
-                    // 官方 vector 的图形只占 viewport 的 ~41%，这里放大到与方向盘同样的观感；
-                    // 多出来的部分是透明区域，被外层 clip 裁掉不会切到图形本体。
-                    .then(
-                        if (official) {
-                            Modifier.graphicsLayer(scaleX = 1.64f, scaleY = 1.64f)
-                        } else {
-                            Modifier
-                        },
-                    ),
+                    // 两套前景都只占画布 ~40%（2026-11-20 与官方 logo 对齐后方向盘也是这个数），
+                    // 在 58dp 的小预览里会缩成一小坨。统一放大 1.64 倍到容器的 ~64%，
+                    // 边角还有余量、不会切到图形本体；桌面上的真实大小由启动器决定，不受这里影响。
+                    .graphicsLayer(scaleX = 1.64f, scaleY = 1.64f),
             )
         }
         Spacer(Modifier.height(8.dp))
