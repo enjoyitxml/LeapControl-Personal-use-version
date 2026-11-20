@@ -856,7 +856,7 @@ object VehicleWidget {
     }
 
     /**
-     * 右上角状态行前面那颗 10dp 小图标。
+     * 右上角状态行前面那颗 13dp 小图标。
      *
      * 三件事一起做：给不给图（[WidgetStatusText.HintIcon.NONE] 就 GONE）、换哪张、染什么色。
      * **顺序不能反**：先 `setImageViewResource` 再 `setColorFilter` —— 反了某些桌面会拿
@@ -880,21 +880,25 @@ object VehicleWidget {
     /**
      * 状态图标 → 资源。
      *
-     * 8 颗官方同款线稿用的是 `ic_hint_*`（描边加粗到 2.3），不是按键那套 `ic_qc_*`：
-     * 原稿描边 1.31，缩到 10dp 只剩 0.55dp，桌面上是断续的灰点。
+     * 载具类那 8 颗（解锁 / 上锁 / 后备箱 / 车窗 / 空调 / 预热 / 遮阳帘 / 哨兵）
+     * **直接复用按键那套 `ic_qc_*`**：同一份官方线稿，描边 1.31，和旁边 10sp 的字一样细。
+     * 2026-11-20 第一版曾把它们各复制一份、描边加粗到 2.3（怕 10dp 下糊），
+     * 用户看过真机后要求「不要加粗」，那 8 个副本就删了 —— 别再复制回来。
+     * 只有工程里原本没有的 5 颗（闪电 / 满格电池 / 对勾 / 感叹 / 人像）是 `ic_hint_*`。
+     *
      * [WidgetStatusText.HintIcon.NONE] 返回 0，调用方据此把图标藏掉（更新时间那类提示）。
      */
     private fun hintIconRes(icon: WidgetStatusText.HintIcon): Int = when (icon) {
         WidgetStatusText.HintIcon.NONE -> 0
         WidgetStatusText.HintIcon.SYNC -> R.drawable.ic_widget_refresh
-        WidgetStatusText.HintIcon.UNLOCK -> R.drawable.ic_hint_unlock
-        WidgetStatusText.HintIcon.LOCK -> R.drawable.ic_hint_lock
-        WidgetStatusText.HintIcon.TRUNK -> R.drawable.ic_hint_trunk
-        WidgetStatusText.HintIcon.WINDOW -> R.drawable.ic_hint_window
-        WidgetStatusText.HintIcon.AC -> R.drawable.ic_hint_ac
-        WidgetStatusText.HintIcon.PREHEAT -> R.drawable.ic_hint_preheat
-        WidgetStatusText.HintIcon.SUNSHADE -> R.drawable.ic_hint_sunshade
-        WidgetStatusText.HintIcon.SENTRY -> R.drawable.ic_hint_sentry
+        WidgetStatusText.HintIcon.UNLOCK -> R.drawable.ic_qc_unlock
+        WidgetStatusText.HintIcon.LOCK -> R.drawable.ic_qc_lock
+        WidgetStatusText.HintIcon.TRUNK -> R.drawable.ic_qc_trunk
+        WidgetStatusText.HintIcon.WINDOW -> R.drawable.ic_qc_window
+        WidgetStatusText.HintIcon.AC -> R.drawable.ic_qc_ac
+        WidgetStatusText.HintIcon.PREHEAT -> R.drawable.ic_qc_preheat
+        WidgetStatusText.HintIcon.SUNSHADE -> R.drawable.ic_qc_sunshade
+        WidgetStatusText.HintIcon.SENTRY -> R.drawable.ic_qc_sentry
         WidgetStatusText.HintIcon.CHARGE -> R.drawable.ic_hint_charge
         WidgetStatusText.HintIcon.CHARGED -> R.drawable.ic_hint_charged
         WidgetStatusText.HintIcon.OK -> R.drawable.ic_hint_ok

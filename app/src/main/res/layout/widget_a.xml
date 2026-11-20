@@ -397,12 +397,14 @@
 
         <!-- 状态图标（2026-11-20）：充电中闪电、解锁开锁、后备箱… 跟右边文字同色，
              由 VehicleWidget.bindLive 按 WidgetStatusText 给的语义设图与染色；
-             更新时间 / 尚未同步这类提示不给图标，运行时 GONE。 -->
+             更新时间 / 尚未同步这类提示不给图标，运行时 GONE。
+             13dp 是量出来的：线稿图形只占 24 视口的 ~72%，乘下来正好 9.4dp，
+             与旁边 10sp 的字等高；别再按「字号就是图标框」写成 10dp，那样图形只有 7dp。 -->
         <ImageView
             android:id="@+id/wg_hint_icon"
-            android:layout_width="10dp"
-            android:layout_height="10dp"
-            android:layout_marginEnd="3dp"
+            android:layout_width="13dp"
+            android:layout_height="13dp"
+            android:layout_marginEnd="4dp"
             android:contentDescription="@null"
             android:scaleType="fitCenter"
             android:src="@drawable/ic_hint_ok"

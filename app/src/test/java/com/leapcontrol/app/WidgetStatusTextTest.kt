@@ -250,12 +250,15 @@ class WidgetStatusTextTest {
     @Test
     fun `每类提示都映射到自己的图标资源`() {
         val widget = read("app/src/main/java/com/leapcontrol/app/widget/VehicleWidget.kt")
+        // 新画的 5 颗
+        listOf("ic_hint_charge", "ic_hint_charged", "ic_hint_ok", "ic_hint_warn", "ic_hint_user")
+            .forEach { assertTrue("$it 没接到 R.drawable", widget.contains("R.drawable.$it")) }
+        // 载具类 8 颗复用按键那套官方线稿（2026-11-20 用户要求「不要加粗」，副本已删）
         listOf(
-            "ic_hint_charge", "ic_hint_charged", "ic_hint_ok", "ic_hint_warn", "ic_hint_user",
-            "ic_hint_unlock", "ic_hint_lock", "ic_hint_trunk", "ic_hint_window",
-            "ic_hint_ac", "ic_hint_preheat", "ic_hint_sunshade", "ic_hint_sentry",
-            "ic_widget_refresh",
+            "ic_qc_unlock", "ic_qc_lock", "ic_qc_trunk", "ic_qc_window",
+            "ic_qc_ac", "ic_qc_preheat", "ic_qc_sunshade", "ic_qc_sentry",
         ).forEach { assertTrue("$it 没接到 R.drawable", widget.contains("R.drawable.$it")) }
+        assertTrue("ic_widget_refresh 没接到 R.drawable", widget.contains("R.drawable.ic_widget_refresh"))
 
         assertTrue(
             "图标没在 bindLive 里绑定",
