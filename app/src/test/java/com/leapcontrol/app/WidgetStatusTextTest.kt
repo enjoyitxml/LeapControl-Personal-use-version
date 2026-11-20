@@ -258,7 +258,9 @@ class WidgetStatusTextTest {
             "ic_qc_unlock", "ic_qc_lock", "ic_qc_trunk", "ic_qc_window",
             "ic_qc_ac", "ic_qc_preheat", "ic_qc_sunshade", "ic_qc_sentry",
         ).forEach { assertTrue("$it 没接到 R.drawable", widget.contains("R.drawable.$it")) }
-        assertTrue("ic_widget_refresh 没接到 R.drawable", widget.contains("R.drawable.ic_widget_refresh"))
+        // 「正在同步…」不再挂图标（用户要求），这条映射必须彻底消失，别只把枚举值留着不用
+        assertTrue("SYNC 图标还留着", !widget.contains("HintIcon.SYNC"))
+        assertTrue("ic_widget_refresh 又被当成提示图标了", !widget.contains("R.drawable.ic_widget_refresh"))
 
         assertTrue(
             "图标没在 bindLive 里绑定",
@@ -283,9 +285,9 @@ class WidgetStatusTextTest {
             HintIcon.NONE,
             WidgetStatusText.resolve(WidgetStatusText.Input(state = WidgetStatusText.State())).icon,
         )
-        // 但「正在同步…」是加载态，不是时间戳，给刷新箭头
+        // 「正在同步…」也不给：这一行右边紧挨着刷新键，再加一颗循环箭头等于并排两个同样图形
         assertEquals(
-            HintIcon.SYNC,
+            HintIcon.NONE,
             WidgetStatusText.resolve(WidgetStatusText.Input()).icon,
         )
     }

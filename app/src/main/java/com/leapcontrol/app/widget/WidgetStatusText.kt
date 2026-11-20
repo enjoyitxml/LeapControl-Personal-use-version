@@ -23,8 +23,9 @@ import java.util.Locale
  * （[HintIcon]），不放 `R.drawable`：这一层要能跑纯 JVM 单测，资源映射在
  * `VehicleWidget.hintIconRes()`。
  *
- * **更新时间那类提示（「12:30 更新」「尚未同步」）不给图标** —— 用户明确要求，
- * 并且它俩本身就是「没事发生」的状态，前面压一颗表反而更吵。
+ * **不给图标的几种**：「12:30 更新」「尚未同步」（没事发生，压一颗表反而更吵）、
+ * 「正在同步…」（右边紧挨着刷新键，再来一颗循环箭头就是两个同样图形并排）。
+ * 认不出的临时提示也不硬塞 —— 宁可空着，别配错。
  *
  * 所有入参都是基本类型 / 数据类，不碰 `CarStatus` / Android。
  */
@@ -40,9 +41,8 @@ object WidgetStatusText {
      * 其余复用按键那套官方同款线稿（`ic_qc_*`，描边 1.31，不加粗）。
      */
     enum class HintIcon {
-        /** 不挂图标（更新时间、尚未同步）。 */
+        /** 不挂图标：更新时间、尚未同步、正在同步…（后面本来就有刷新键）、以及认不出的临时提示。 */
         NONE,
-        SYNC,
         UNLOCK,
         LOCK,
         TRUNK,
@@ -180,7 +180,8 @@ object WidgetStatusText {
             input.busy != null -> Line(
                 input.busy,
                 Tone.HIGHLIGHT,
-                actionIcon(input.busy).takeIf { it != HintIcon.NONE } ?: HintIcon.SYNC,
+                // 认不出的临时提示不硬塞图标：多半是「正在刷新…」这类，后面那个刷新键就是它的图标
+                actionIcon(input.busy),
             )
 
             !input.signedIn -> Line(
@@ -203,7 +204,9 @@ object WidgetStatusText {
                 },
             )
 
-            state == null -> Line("正在同步…", Tone.PLAIN, HintIcon.SYNC)
+            // 用户明确要求：「正在同步…」前面别再加图标 —— 这一行右边紧跟着刷新键，
+            // 再压一颗循环箭头就是两个一样的图形并排
+            state == null -> Line("正在同步…", Tone.PLAIN, HintIcon.NONE)
 
             charging -> {
                 val remain = chargeRemain(state)

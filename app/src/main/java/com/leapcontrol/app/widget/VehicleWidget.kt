@@ -890,7 +890,6 @@ object VehicleWidget {
      */
     private fun hintIconRes(icon: WidgetStatusText.HintIcon): Int = when (icon) {
         WidgetStatusText.HintIcon.NONE -> 0
-        WidgetStatusText.HintIcon.SYNC -> R.drawable.ic_widget_refresh
         WidgetStatusText.HintIcon.UNLOCK -> R.drawable.ic_qc_unlock
         WidgetStatusText.HintIcon.LOCK -> R.drawable.ic_qc_lock
         WidgetStatusText.HintIcon.TRUNK -> R.drawable.ic_qc_trunk
