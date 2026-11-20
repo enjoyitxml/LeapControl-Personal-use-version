@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 小组件右上角状态图标 · 遮阳帘已开启。
+     10dp 下的识别度优先于笔画数。
+     形状照抄 `ic_qc_sunshade.xml`（同一套官方同款线稿），只有描边加粗：那颗图标在桌面上只显示
+     10dp，原稿 1.31 的笔画缩下去只剩 0.55dp，抗锯齿后是断续的灰点。
+     颜色不写死 —— VehicleWidget.bindLive 按「字体颜色」setColorFilter 染上去，
+     异常类提示才改用警示色。-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M 6.482 7.592 C 6.482 5.469 8.245 3.510 12.212 3.510 C 16.180 3.510 17.943 5.469 17.943 7.592 V 18.367 A 1.959 1.959 0 0 1 15.984 20.327 H 8.441 A 1.959 1.959 0 0 1 6.482 18.367 Z"
+        android:strokeColor="#FF000000"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="2.3" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M 9.878 10.041 H 14.449"
+        android:strokeColor="#FF000000"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="2.3" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M 9.878 13.012 H 14.449"
+        android:strokeColor="#FF000000"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="2.3" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M 9.878 16.016 H 14.449"
+        android:strokeColor="#FF000000"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="2.3" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M 6.482 9.551 L 3.673 12.000"
+        android:strokeColor="#FF000000"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="2.3" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M 17.943 9.551 L 20.751 12.000"
+        android:strokeColor="#FF000000"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="2.3" />
+</vector>

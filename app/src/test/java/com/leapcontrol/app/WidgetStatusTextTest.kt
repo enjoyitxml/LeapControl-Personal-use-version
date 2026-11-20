@@ -1,6 +1,7 @@
 package com.leapcontrol.app
 
 import com.leapcontrol.app.widget.WidgetStatusText
+import com.leapcontrol.app.widget.WidgetStatusText.HintIcon
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -15,6 +16,9 @@ import java.io.File
  * 遮阳帘开着时一律写成「12:30 更新」，充电时也看不到剩余时长。这里把文案折行规则、
  * 优先级、以及「高亮色真的被用到 / 设置里真的能改」全部钉死 —— 这类改动编译得过，
  * 但少接一处就表现为「卡片上什么都不变」。
+ *
+ * 2026-11-20 又加了「每句提示前面挂一颗 10dp 小图标」：这里同时钉死图标映射，
+ * 以及「更新时间 / 尚未同步不给图标」这条用户明确提的要求。
  */
 class WidgetStatusTextTest {
 
@@ -46,15 +50,23 @@ class WidgetStatusTextTest {
                 "车辆已解锁", "后备箱已开启", "车窗已开启", "空调已开启",
                 "电池预热已开启", "遮阳帘已开启", "哨兵已开启",
             ),
-            hints,
+            hints.map { it.text },
+        )
+        // 每条都得带自己的图标，且不能是 NONE —— 少接一颗就是「有的状态有图、有的没有」
+        assertEquals(
+            listOf(
+                HintIcon.UNLOCK, HintIcon.TRUNK, HintIcon.WINDOW, HintIcon.AC,
+                HintIcon.PREHEAT, HintIcon.SUNSHADE, HintIcon.SENTRY,
+            ),
+            hints.map { it.icon },
         )
     }
 
     @Test
     fun `信号读不到或明确是关 一律不写 不猜`() {
-        assertEquals(emptyList<String>(), WidgetStatusText.openHints(null))
+        assertEquals(emptyList<WidgetStatusText.Hint>(), WidgetStatusText.openHints(null))
         assertEquals(
-            emptyList<String>(),
+            emptyList<WidgetStatusText.Hint>(),
             WidgetStatusText.openHints(
                 WidgetStatusText.State(
                     locked = true, acOn = false, trunkOpen = null,
@@ -65,13 +77,23 @@ class WidgetStatusTextTest {
     }
 
     @Test
-    fun `多项同时开着折成一句 不让桌面截半句`() {
-        assertNull(WidgetStatusText.hintsText(emptyList()))
-        assertEquals("空调已开启", WidgetStatusText.hintsText(listOf("空调已开启")))
-        assertEquals(
-            "车辆已解锁 · 等3项",
-            WidgetStatusText.hintsText(listOf("车辆已解锁", "后备箱已开启", "车窗已开启")),
-        )
+    fun `多项同时开着折成一句 图标跟着第一条走`() {
+        assertNull(WidgetStatusText.hintsLine(emptyList()))
+
+        val one = WidgetStatusText.hintsLine(
+            WidgetStatusText.openHints(WidgetStatusText.State(acOn = true)),
+        )!!
+        assertEquals("空调已开启", one.text)
+        assertEquals(HintIcon.AC, one.icon)
+
+        val many = WidgetStatusText.hintsLine(
+            WidgetStatusText.openHints(
+                WidgetStatusText.State(locked = false, trunkOpen = true, windowOpen = true),
+            ),
+        )!!
+        assertEquals("车辆已解锁 · 等3项", many.text)
+        // 多处开着时图标仍取第一条（解锁），不加「数字角标」那种折中
+        assertEquals(HintIcon.UNLOCK, many.icon)
     }
 
     // ========================================================================
@@ -193,38 +215,100 @@ class WidgetStatusTextTest {
     }
 
     // ========================================================================
-    // 源码守门：高亮色真的被接上、设置页真的能改
+    // 源码守门：颜色跟字体颜色、图标真的挂上
     // ========================================================================
 
     @Test
-    fun `右上角文字走 WidgetStatusText 且高亮色来自设置`() {
+    fun `状态文字与刷新键都取字体颜色 异常才用警示色`() {
         val widget = read("app/src/main/java/com/leapcontrol/app/widget/VehicleWidget.kt")
         assertTrue("bindLive 没用纯逻辑层", widget.contains("WidgetStatusText.resolve("))
-        assertTrue("状态行没用可自定义的高亮色", widget.contains("Tone.HIGHLIGHT -> p.highlight"))
-        assertTrue("Palette 少了 highlight 字段", widget.contains("val highlight: Int"))
+        assertTrue(
+            "状态文字没跟字体颜色走",
+            widget.contains(
+                "val statusColor = if (line.tone == WidgetStatusText.Tone.WARN) p.warn else p.ink",
+            ),
+        )
+        assertTrue(
+            "刷新键没跟字体颜色走",
+            widget.contains("R.id.wg_refresh, \"setColorFilter\", p.ink"),
+        )
+        assertTrue("Palette 里还留着旧的高亮色字段", !widget.contains("val highlight: Int"))
         // 只染状态行，别把五个按键一起染了
-        assertTrue("按键高亮仍要走 active", widget.contains("tintIcon(views, iconId, if (on) p.active else p.ink)"))
+        assertTrue(
+            "按键高亮仍要走 active",
+            widget.contains("tintIcon(views, iconId, if (on) p.active else p.ink)"),
+        )
         assertTrue(
             "车况信号没喂全（含充电剩余时长）",
-            listOf("sentryOn = it.sentryOn", "batteryPreheatOn = it.batteryPreheatOn",
-                "chargeRemainMinutes = it.chargeRemainMinutes").all { widget.contains(it) },
+            listOf(
+                "sentryOn = it.sentryOn", "batteryPreheatOn = it.batteryPreheatOn",
+                "chargeRemainMinutes = it.chargeRemainMinutes",
+            ).all { widget.contains(it) },
         )
     }
 
     @Test
-    fun `高亮色三套版式都能设 且默认不落盘`() {
-        val style = read("app/src/main/java/com/leapcontrol/app/widget/WidgetStyle.kt")
-        assertTrue("没有 highlight 偏好", style.contains("fun highlight(context: Context): Int?"))
-        assertTrue("没有 setHighlight", style.contains("fun setHighlight"))
-        assertTrue("恢复默认颜色没清高亮色", style.contains("remove(KEY_HIGHLIGHT)"))
-        assertTrue("没有版式默认色", style.contains("fun defaultHighlight(context: Context): Int"))
+    fun `每类提示都映射到自己的图标资源`() {
+        val widget = read("app/src/main/java/com/leapcontrol/app/widget/VehicleWidget.kt")
+        listOf(
+            "ic_hint_charge", "ic_hint_charged", "ic_hint_ok", "ic_hint_warn", "ic_hint_user",
+            "ic_hint_unlock", "ic_hint_lock", "ic_hint_trunk", "ic_hint_window",
+            "ic_hint_ac", "ic_hint_preheat", "ic_hint_sunshade", "ic_hint_sentry",
+            "ic_widget_refresh",
+        ).forEach { assertTrue("$it 没接到 R.drawable", widget.contains("R.drawable.$it")) }
 
-        val settings = read("app/src/main/java/com/leapcontrol/app/ui/WidgetSettings.kt")
-        assertTrue("设置页没有「状态提示高亮色」", settings.contains("title = \"状态提示高亮色\""))
-        val rowAt = settings.indexOf("title = \"状态提示高亮色\"")
-        val transparentOnlyAt = settings.indexOf("if (style == WidgetStyle.STYLE_T)")
-        assertTrue("高亮色被塞进了「仅全透明版式」分支，另外两套改不了", rowAt < transparentOnlyAt)
-        assertTrue("选色没落盘", settings.contains("WidgetStyle.setHighlight(context, color)"))
-        assertTrue("没有恢复默认提示色", settings.contains("WidgetStyle.resetHighlight(context)"))
+        assertTrue(
+            "图标没在 bindLive 里绑定",
+            widget.contains("bindHintIcon(views, line, statusColor)"),
+        )
+        // 换图必须排在染色之前：反了某些桌面会拿上一次的滤镜去染新图，出现串色
+        val setImage = widget.indexOf("views.setImageViewResource(R.id.wg_hint_icon, res)")
+        val setFilter = widget.indexOf("views.setInt(R.id.wg_hint_icon, \"setColorFilter\", color)")
+        assertTrue("图标没先设图再染色", setImage in 0 until setFilter)
+    }
+
+    @Test
+    fun `更新时间这类提示不给图标`() {
+        // 用户明确要求：右上角写「12:30 更新」「尚未同步」时前面不要小图标
+        assertEquals(
+            HintIcon.NONE,
+            WidgetStatusText.resolve(
+                WidgetStatusText.Input(clock = "12:30", state = WidgetStatusText.State()),
+            ).icon,
+        )
+        assertEquals(
+            HintIcon.NONE,
+            WidgetStatusText.resolve(WidgetStatusText.Input(state = WidgetStatusText.State())).icon,
+        )
+        // 但「正在同步…」是加载态，不是时间戳，给刷新箭头
+        assertEquals(
+            HintIcon.SYNC,
+            WidgetStatusText.resolve(WidgetStatusText.Input()).icon,
+        )
+    }
+
+    @Test
+    fun `充电 登录 密码 异常 各自对上图标`() {
+        fun icon(input: WidgetStatusText.Input) = WidgetStatusText.resolve(input).icon
+        val base = WidgetStatusText.Input(state = WidgetStatusText.State())
+
+        assertEquals(HintIcon.CHARGE, icon(base.copy(state = WidgetStatusText.State(chargeState = 1))))
+        assertEquals(HintIcon.CHARGED, icon(base.copy(state = WidgetStatusText.State(chargeState = 2))))
+        assertEquals(HintIcon.USER, icon(base.copy(signedIn = false)))
+        assertEquals(
+            HintIcon.WARN,
+            icon(base.copy(signedIn = false, sessionExpired = true)),
+        )
+        assertEquals(HintIcon.LOCK, icon(base.copy(pinReady = false)))
+        // 控车结果：成功用「这件事」的图标，失败一律警示
+        assertEquals(HintIcon.UNLOCK, icon(base.copy(flashText = "已解锁")))
+        assertEquals(
+            HintIcon.WARN,
+            icon(base.copy(flashText = "上锁已下发", flashOk = false)),
+        )
+        // 控车进行中按动作认
+        assertEquals(HintIcon.TRUNK, icon(base.copy(busy = "正在开后备箱…")))
+        assertEquals(HintIcon.AC, icon(base.copy(busy = "正在开空调…")))
     }
 }
+

@@ -510,18 +510,18 @@ object VehicleWidget {
 
     // ---------------- RemoteViews 组装 ----------------
 
-    /** 一次渲染用的配色：浅色 / 深色 / 沉浸三套，全量与增量共用。 */
+    /**
+     * 一次渲染用的配色：浅色 / 深色 / 沉浸三套，全量与增量共用。
+     *
+     * 2026-11-20 起没有「状态提示高亮色」这个字段了：右上角那行文字和刷新键一律取
+     * [ink]（字体颜色，默认白），用户要求跟字体颜色一起变。按键高亮仍单独走 [active]，
+     * 改字色不会把五个按键一起染了。
+     */
     private data class Palette(
         val ink: Int,
         val sub: Int,
         val warn: Int,
         val active: Int,
-        /**
-         * 右上角状态提示的高亮色：用户在「个性化 → 桌面小组件 → 状态提示高亮色」里定。
-         * 只作用于 `wg_time` 那一行文字；按键图标高亮仍走 [active]，
-         * 免得改一个提示色把五个按键一起染了。
-         */
-        val highlight: Int,
         val ev: Int,
         val fuel: Int,
     )
@@ -554,8 +554,6 @@ object VehicleWidget {
                 night -> ACCENT_DARK
                 else -> ACCENT_LIGHT
             },
-            // 三套版式都能自定义；没设过时取各自的版式主色（与 active 同值），老设备零回归
-            highlight = WidgetStyle.highlight(context) ?: WidgetStyle.defaultHighlight(context),
             // 续航那两行的小图标跟首页同色：电绿、油蓝。沉浸样式压在照片上，
             // 原色会被背景吃掉，所以单独提亮一档。
             ev = when {
@@ -589,7 +587,6 @@ object VehicleWidget {
             sub = withAlpha(ink, 0.68f),
             warn = if (lightInk) WARN_T_LIGHT else WARN_T_DARK,
             active = WidgetStyle.ctrl(context),
-            highlight = WidgetStyle.highlight(context) ?: WidgetStyle.ctrl(context),
             ev = if (lightInk) EV_T_LIGHT else EV_T_DARK,
             fuel = if (lightInk) FUEL_T_LIGHT else FUEL_T_DARK,
         )
@@ -859,6 +856,53 @@ object VehicleWidget {
     }
 
     /**
+     * 右上角状态行前面那颗 10dp 小图标。
+     *
+     * 三件事一起做：给不给图（[WidgetStatusText.HintIcon.NONE] 就 GONE）、换哪张、染什么色。
+     * **顺序不能反**：先 `setImageViewResource` 再 `setColorFilter` —— 反了某些桌面会拿
+     * 上一次的滤镜去染新图，出现「已解锁却还配着满电电池的绿」这种串色。
+     */
+    private fun bindHintIcon(
+        views: RemoteViews,
+        line: WidgetStatusText.Line,
+        color: Int,
+    ) {
+        val res = hintIconRes(line.icon)
+        if (res == 0) {
+            views.setViewVisibility(R.id.wg_hint_icon, View.GONE)
+            return
+        }
+        views.setViewVisibility(R.id.wg_hint_icon, View.VISIBLE)
+        views.setImageViewResource(R.id.wg_hint_icon, res)
+        views.setInt(R.id.wg_hint_icon, "setColorFilter", color)
+    }
+
+    /**
+     * 状态图标 → 资源。
+     *
+     * 8 颗官方同款线稿用的是 `ic_hint_*`（描边加粗到 2.3），不是按键那套 `ic_qc_*`：
+     * 原稿描边 1.31，缩到 10dp 只剩 0.55dp，桌面上是断续的灰点。
+     * [WidgetStatusText.HintIcon.NONE] 返回 0，调用方据此把图标藏掉（更新时间那类提示）。
+     */
+    private fun hintIconRes(icon: WidgetStatusText.HintIcon): Int = when (icon) {
+        WidgetStatusText.HintIcon.NONE -> 0
+        WidgetStatusText.HintIcon.SYNC -> R.drawable.ic_widget_refresh
+        WidgetStatusText.HintIcon.UNLOCK -> R.drawable.ic_hint_unlock
+        WidgetStatusText.HintIcon.LOCK -> R.drawable.ic_hint_lock
+        WidgetStatusText.HintIcon.TRUNK -> R.drawable.ic_hint_trunk
+        WidgetStatusText.HintIcon.WINDOW -> R.drawable.ic_hint_window
+        WidgetStatusText.HintIcon.AC -> R.drawable.ic_hint_ac
+        WidgetStatusText.HintIcon.PREHEAT -> R.drawable.ic_hint_preheat
+        WidgetStatusText.HintIcon.SUNSHADE -> R.drawable.ic_hint_sunshade
+        WidgetStatusText.HintIcon.SENTRY -> R.drawable.ic_hint_sentry
+        WidgetStatusText.HintIcon.CHARGE -> R.drawable.ic_hint_charge
+        WidgetStatusText.HintIcon.CHARGED -> R.drawable.ic_hint_charged
+        WidgetStatusText.HintIcon.OK -> R.drawable.ic_hint_ok
+        WidgetStatusText.HintIcon.WARN -> R.drawable.ic_hint_warn
+        WidgetStatusText.HintIcon.USER -> R.drawable.ic_hint_user
+    }
+
+    /**
      * 全量与增量共用的「会变的内容」：状态文案、续航数字与进度条、车模、按键高亮。
      *
      * 往这里加东西是安全的（两条路径都会生效）；**别把背景 / 字号 / 内边距 / 点击写进来**，
@@ -922,16 +966,12 @@ object VehicleWidget {
             ),
         )
         views.setTextViewText(R.id.wg_time, line.text)
-        views.setTextColor(
-            R.id.wg_time,
-            when (line.tone) {
-                WidgetStatusText.Tone.HIGHLIGHT -> p.highlight
-                WidgetStatusText.Tone.WARN -> p.warn
-                WidgetStatusText.Tone.PLAIN -> p.sub
-            },
-        )
-        // 刷新键是常驻工具，不跟着状态变色，跟着副信息那档灰走
-        views.setInt(R.id.wg_refresh, "setColorFilter", p.sub)
+        // 文字与刷新键都取「字体颜色」（2026-11-20 用户要求，默认白）。
+        // 只有异常类提示保留警示色 —— 跟「12:30 更新」一样白的话，出事了反而看不见。
+        val statusColor = if (line.tone == WidgetStatusText.Tone.WARN) p.warn else p.ink
+        views.setTextColor(R.id.wg_time, statusColor)
+        bindHintIcon(views, line, statusColor)
+        views.setInt(R.id.wg_refresh, "setColorFilter", p.ink)
 
         // ---- 续航：与首页续航区同一套口径（图标 · 里程 · 进度条 · 百分比）----
         // 纯电车型只有电一行、读的是「总续航」；增程车型电那一行读「纯电续航」，

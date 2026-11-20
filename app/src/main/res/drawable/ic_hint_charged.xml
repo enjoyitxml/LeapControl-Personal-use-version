@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 小组件右上角状态图标 · 充电完成 / 已充满：横电池 + 极柱 + 三格满电。
+     和 `ic_hint_charge` 的闪电配成一对：充电中是闪电，充完是满格电池。
+     描边 2.0 而不是 2.3 —— 电池框本身够大，2.3 会让框内三格挤在一起。-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M 2.6 9.8 A 2.6 2.6 0 0 1 5.2 7.2 H 16.6 A 2.6 2.6 0 0 1 19.2 9.8 V 14.2 A 2.6 2.6 0 0 1 16.6 16.8 H 5.2 A 2.6 2.6 0 0 1 2.6 14.2 Z"
+        android:strokeColor="#FF000000"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="2" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M 21.2 10.4 V 13.6"
+        android:strokeColor="#FF000000"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="2" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M 5.8 10.6 V 13.4 M 9.6 10.6 V 13.4 M 13.4 10.6 V 13.4"
+        android:strokeColor="#FF000000"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="2" />
+</vector>

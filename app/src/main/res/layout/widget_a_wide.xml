@@ -392,6 +392,19 @@
         android:gravity="center_vertical|end"
         android:orientation="horizontal">
 
+        <!-- 状态图标（2026-11-20）：充电中闪电、解锁开锁、后备箱… 跟右边文字同色，
+             由 VehicleWidget.bindLive 按 WidgetStatusText 给的语义设图与染色；
+             更新时间 / 尚未同步这类提示不给图标，运行时 GONE。 -->
+        <ImageView
+            android:id="@+id/wg_hint_icon"
+            android:layout_width="10dp"
+            android:layout_height="10dp"
+            android:layout_marginEnd="3dp"
+            android:contentDescription="@null"
+            android:scaleType="fitCenter"
+            android:src="@drawable/ic_hint_ok"
+            android:visibility="gone" />
+
         <TextView
             android:id="@+id/wg_time"
             android:layout_width="wrap_content"

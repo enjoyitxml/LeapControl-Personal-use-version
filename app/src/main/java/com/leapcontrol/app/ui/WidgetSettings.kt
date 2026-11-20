@@ -85,10 +85,6 @@ fun WidgetSettingsGroup() {
     var customBg by remember { mutableStateOf(WidgetWallpaper.exists(context)) }
     var ink by remember { mutableIntStateOf(WidgetStyle.ink(context)) }
     var ctrl by remember { mutableIntStateOf(WidgetStyle.ctrl(context)) }
-    // 右上角状态提示的高亮色：三套版式共用，没设过时显示各自版式的默认主色
-    var highlight by remember {
-        mutableIntStateOf(WidgetStyle.highlight(context) ?: WidgetStyle.defaultHighlight(context))
-    }
     // 控车按钮的顺序摘要：prefs 不可观察，退回本页时回读一次
     var buttonSummary by remember {
         mutableStateOf(WidgetButtonLayout.load(context).joinToString(" · ") { it.title })
@@ -142,7 +138,6 @@ fun WidgetSettingsGroup() {
         customBg = customBg,
         ink = ink,
         ctrl = ctrl,
-        highlight = highlight,
         buttonSummary = buttonSummary,
         cellBg = cellBg,
         dividers = dividers,
@@ -211,24 +206,10 @@ fun WidgetSettingsGroup() {
             WidgetStyle.setCtrl(context, color)
             VehicleWidget.render(context)
         },
-        onPickHighlight = { color ->
-            highlight = color
-            WidgetStyle.setHighlight(context, color)
-            // 只改 wg_time 的文字颜色，属于 bindLive 的「会变的内容」：
-            // 取色器拖动时连续回调，走增量重画才不会每帧重新解码沉浸样式的壁纸
-            VehicleWidget.render(context, partial = true)
-        },
-        onResetHighlight = {
-            WidgetStyle.resetHighlight(context)
-            highlight = WidgetStyle.defaultHighlight(context)
-            VehicleWidget.render(context)
-            Toast.makeText(context, "已恢复默认提示色", Toast.LENGTH_SHORT).show()
-        },
         onResetColors = {
             WidgetStyle.resetColors(context)
             ink = WidgetStyle.ink(context)
             ctrl = WidgetStyle.ctrl(context)
-            highlight = WidgetStyle.defaultHighlight(context)
             VehicleWidget.render(context)
             Toast.makeText(context, "已恢复默认颜色", Toast.LENGTH_SHORT).show()
         },
@@ -262,7 +243,6 @@ private fun WidgetSection(
     customBg: Boolean,
     ink: Int,
     ctrl: Int,
-    highlight: Int,
     buttonSummary: String,
     cellBg: Boolean,
     dividers: Boolean,
@@ -284,8 +264,6 @@ private fun WidgetSection(
     onSelectStyle: (String) -> Unit,
     onPickInk: (Int) -> Unit,
     onPickCtrl: (Int) -> Unit,
-    onPickHighlight: (Int) -> Unit,
-    onResetHighlight: () -> Unit,
     onResetColors: () -> Unit,
     onPickBg: () -> Unit,
     onClearBg: () -> Unit,
@@ -455,30 +433,11 @@ private fun WidgetSection(
 
         Spacer(Modifier.height(10.dp))
 
-        // ---- 卡 4：颜色与背景（提示高亮色常显；全透明字色与沉浸底图按需出现）----
+        // ---- 卡 4：颜色与背景（全透明字色与沉浸底图按需出现）----
         SettingsCard("颜色与背景") {
-            // ---- 右上角状态提示的高亮色：三套版式都生效 ----
-            // 与「全透明主题的字色 / 控件色」不是一回事：那两个只在 T 版式出现，
-            // 而「车辆已解锁 / 空调已开启 / 充电中 · 剩23分」这些提示在任何版式上都要高亮。
-            // 默认不落盘（highlight == null），老设备升级后颜色跟各版式主色一模一样。
-            Spacer(Modifier.height(14.dp))
-            WidgetColorRow(
-                title = "状态提示高亮色",
-                desc = "右上角写「车辆已解锁 / 空调已开启 / 后备箱已开启 / 充电中 · 剩23分」" +
-                    "这类提示时用的文字颜色，三套版式都生效。",
-                color = highlight,
-                onPick = onPickHighlight,
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "恢复默认提示色",
-                color = C.textSecondary,
-                fontSize = 11.sp,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .clickable { onResetHighlight() }
-                    .padding(horizontal = 2.dp, vertical = 4.dp),
-            )
+            // 这里原来有一条「状态提示高亮色」。2026-11-20 用户要求右上角那行提示与刷新键
+            // 一律跟「字体颜色」走，那一项就不再有任何消费者 —— 留着只会让人调了没反应。
+            // 老设备 prefs 里的旧值由 WidgetStyle.resetColors 顺手清掉。
 
             // ---- 全透明主题的颜色：只在选中它时出现 ----
             // 素纸 / 沉浸的配色是跟着「卡片底」定的，开放了反而会把可读性调坏，

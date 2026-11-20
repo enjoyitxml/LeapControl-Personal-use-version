@@ -66,11 +66,6 @@ object WidgetStyle {
     const val DEFAULT_INK = 0xFFFFFFFF.toInt()
     const val DEFAULT_CTRL = 0xFFFFFFFF.toInt()
 
-    /** 三套版式的默认提示高亮色：与按键生效时的主色同源，没设过就用它们。 */
-    const val DEFAULT_HIGHLIGHT_LIGHT = 0xFF1FA45B.toInt()
-    const val DEFAULT_HIGHLIGHT_DARK = 0xFF3DD68C.toInt()
-    const val DEFAULT_HIGHLIGHT_GLASS = 0xFF8BEFB8.toInt()
-
     private const val PREFS = "widget_style"
     private const val KEY_STYLE = "style"
     private const val KEY_WALLPAPER = "wallpaper"
@@ -78,8 +73,11 @@ object WidgetStyle {
     private const val KEY_INK = "t_ink"
     private const val KEY_CTRL = "t_ctrl"
     /**
-     * 右上角「状态提示」的高亮色。**三套版式都生效**，所以键名不带 `t_` 前缀。
-     * 没设过 = 0 → 走 [defaultHighlight] 的版式主题色，老设备升级后外观零变化。
+     * 老版本存过的「状态提示高亮色」。
+     *
+     * 2026-11-20 起右上角提示与刷新键固定跟「字体颜色」走，这条设置不再有消费者，
+     * 设置页入口已撤。键名留着只为 [resetColors] 能把老机器上残留的值清掉 ——
+     * 别再把它挂回界面或渲染路径。
      */
     private const val KEY_HIGHLIGHT = "highlight"
     private const val KEY_CELL_BG = "cell_bg"
@@ -310,36 +308,7 @@ object WidgetStyle {
         prefs(context).edit().putInt(KEY_CTRL, color or 0xFF000000.toInt()).apply()
     }
 
-    /**
-     * 右上角状态提示高亮色；null = 用户没设过，走 [defaultHighlight]。
-     *
-     * 不用「另存一个默认值」的办法：老设备 prefs 里没有这个键，读到 0 就自然落回
-     * 版式主题色，不需要一次性迁移标记，也不会把用户以前选的字色 / 控件色带偏。
-     */
-    fun highlight(context: Context): Int? =
-        prefs(context).getInt(KEY_HIGHLIGHT, 0).takeIf { it != 0 }
-
-    fun setHighlight(context: Context, color: Int) {
-        prefs(context).edit().putInt(KEY_HIGHLIGHT, color or 0xFF000000.toInt()).apply()
-    }
-
-    /** 只清高亮色（设置页里那条「恢复默认提示色」用）。 */
-    fun resetHighlight(context: Context) {
-        prefs(context).edit().remove(KEY_HIGHLIGHT).apply()
-    }
-
-    /**
-     * 没自定义时用哪档主色。与 `VehicleWidget.paletteFor` 的 `active` 是同一个值，
-     * 放在这里是为了让设置页预览和真机卡片取到同一份默认，不在两个文件里各写一套常量。
-     */
-    fun defaultHighlight(context: Context): Int = when (style(context)) {
-        STYLE_D -> DEFAULT_HIGHLIGHT_GLASS
-        // 全透明：按键高亮本来就跟「控件颜色」走，提示文字沿用同一个
-        STYLE_T -> ctrl(context)
-        else -> if (isNight(context)) DEFAULT_HIGHLIGHT_DARK else DEFAULT_HIGHLIGHT_LIGHT
-    }
-
-    /** 恢复透明主题的两个默认色（顺带把三套版式共用的高亮色一起清掉）。 */
+    /** 恢复透明主题的两个默认色（顺带清掉老版本留下的提示高亮色）。 */
     fun resetColors(context: Context) {
         prefs(context).edit().remove(KEY_INK).remove(KEY_CTRL).remove(KEY_HIGHLIGHT).apply()
     }

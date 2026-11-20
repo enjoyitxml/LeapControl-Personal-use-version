@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 小组件右上角状态图标 · 充电中。
+     实心闪电：线稿在 10dp 下笔画会碎，这一颗宁可牺牲「和线稿同风格」也要一眼认出。
+     颜色由 VehicleWidget.bindLive 按「字体颜色」染色，不写死。-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M 13.6 2.6 L 6.4 13.4 H 10.9 L 9.6 21.4 L 17.2 10.2 H 12.6 Z" />
+</vector>
