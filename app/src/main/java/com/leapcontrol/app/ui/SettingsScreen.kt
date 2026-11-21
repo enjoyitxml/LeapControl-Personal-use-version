@@ -72,6 +72,7 @@ import com.leapcontrol.app.ParkingPhotoSourceRules
 import com.leapcontrol.app.QuickSwitchLock
 import com.leapcontrol.app.QuickSwitchMode
 import com.leapcontrol.app.SessionStore
+import com.leapcontrol.app.SentryScheme
 import com.leapcontrol.app.R
 import com.leapcontrol.app.tiles.QuickTiles
 import com.leapcontrol.app.widget.VehicleWidget
@@ -127,6 +128,9 @@ fun SettingsScreen(
     var showPhotoSource by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     var confirmGate by remember { mutableStateOf(runtime.biometricConfirmEnabled()) }
+    // 哨兵模式方案：原厂（等车端回执）/ 副厂（后加装，状态存本机）
+    val sentryScheme by runtime.sentrySchemeFlow.collectAsState()
+    var showSentryScheme by remember { mutableStateOf(false) }
     // 蓝牙钥匙详情页（从本页进入时以整页覆盖的形式出现，返回即回到设置）
     var showBleKey by remember { mutableStateOf(false) }
     // 蓝牙钥匙的开启提示：既是「关 → 开」的闸，也是未开启时进详情页的闸
@@ -244,7 +248,7 @@ fun SettingsScreen(
         Spacer(Modifier.height(18.dp))
 
         // ---- 2. 控车与安全：下发指令前的两道闸，以及靠近解锁 ----
-        SettingsSection(title = "控车与安全", desc = "密码 · 确认 · 蓝牙钥匙") {
+        SettingsSection(title = "控车与安全", desc = "密码 · 确认 · 哨兵 · 蓝牙钥匙") {
             SettingsCard {
                 ClickRow(
                     title = "控车密码",
@@ -261,6 +265,17 @@ fun SettingsScreen(
                         runtime.setBiometricConfirmEnabled(it)
                     },
                 )
+                Spacer(Modifier.height(10.dp))
+                // 后加装的哨兵拿不到车端「已开启」的回执，这一项就是给它们的开关：
+                // 原厂照旧等回执 + 读车况求证，副厂把开合状态记在本机、下发即算完成。
+                ClickRow(
+                    title = "哨兵模式方案",
+                    desc = when (sentryScheme) {
+                        SentryScheme.FACTORY -> "原厂方案 · 开启后等车端确认"
+                        SentryScheme.AFTERMARKET -> "副厂方案 · 状态存本机，再点一次即关闭"
+                    },
+                    iconRes = R.drawable.ic_qc_sentry,
+                ) { showSentryScheme = true }
             }
 
             // 蓝牙钥匙在这一页**只留一个功能开关**（2026-11-15 用户定，对齐上游）：
@@ -811,6 +826,63 @@ fun SettingsScreen(
             },
             confirmButton = {
                 TextButton(onClick = { showPowerType = false }) { Text("关闭", color = C.textSecondary) }
+            },
+        )
+    }
+
+    // ---- 哨兵模式方案 ----
+    // 原厂：照旧等车端回执 + 读车况求证。副厂（后加装）：车端报不出「已开启」，
+    // 开合状态改存本机，下发即算完成 —— 首页右上角与桌面小组件跟着本地状态显示。
+    if (showSentryScheme) {
+        AlertDialog(
+            onDismissRequest = { showSentryScheme = false },
+            containerColor = C.panelBg,
+            title = { Text("哨兵模式方案", color = C.textPrimary) },
+            text = {
+                Column {
+                    Text(
+                        "决定首页哨兵按钮、桌面小组件与控制中心怎么判断「开启成功」。",
+                        color = C.textSecondary,
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    SentryScheme.entries.forEachIndexed { index, option ->
+                        if (index > 0) Spacer(Modifier.height(2.dp))
+                        val aftermarket = option == SentryScheme.AFTERMARKET
+                        SettingOptionRow(
+                            label = if (aftermarket) "副厂方案（后加装）" else "原厂方案",
+                            desc = if (aftermarket) {
+                                "不等待车端回执，开合状态保存在本机，再点一次即关闭"
+                            } else {
+                                "开启后等车端回执，状态以车况为准"
+                            },
+                            selected = sentryScheme == option,
+                        ) {
+                            runtime.setSentryScheme(option)
+                            showSentryScheme = false
+                            message = if (aftermarket) {
+                                "已改用副厂哨兵方案，状态改为保存在本机"
+                            } else {
+                                "已改回原厂哨兵方案"
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        "副厂方案下第一次开启哨兵会再说明一次；之后点「开启」即视为已开启，"
+                            + "再次点击这颗按钮就是关闭。开启后需自行观察车辆后视镜是否已打开，"
+                            + "确认哨兵确实在工作。",
+                        color = C.textSecondary,
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showSentryScheme = false }) {
+                    Text("关闭", color = C.textSecondary)
+                }
             },
         )
     }

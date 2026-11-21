@@ -68,9 +68,14 @@ internal fun HomeStatusText(
      * 否则刚开完窗、车端信号又是中间态的话，右上角会什么都不写（2026-11-12）。
      */
     windowOpen: Boolean? = status?.windowOpen,
+    /**
+     * 「哨兵是否开着」的显示值。null = 原厂方案，照旧取车况；
+     * 副厂方案（后加装）车端永远报不出这个信号，传本地记录进来。
+     */
+    sentryOn: Boolean? = null,
 ) {
     val C = LocalAppColors.current
-    val view = rememberHomeStatusView(status, flash, windowOpen)
+    val view = rememberHomeStatusView(status, flash, windowOpen, sentryOn)
 
     BoxWithConstraints(modifier = modifier) {
         // 宽屏就是原来的 168dp（大屏视觉一字不差）；只在窄屏上才收缩，条件是给左边
@@ -159,9 +164,11 @@ internal fun rememberHomeStatusView(
     flash: ControlFeedback.Flash? = null,
     /** 见 [HomeStatusText] 的 `windowOpen`：显示用的车窗开启判断，已经过本地档位兜底。 */
     windowOpen: Boolean? = status?.windowOpen,
+    /** 见 [HomeStatusText] 的 `sentryOn`：null = 原厂，取车况；副厂传本地记录。 */
+    sentryOn: Boolean? = null,
 ): HomeStatusView =
     // 数据类做 key：车况刷新时整体换一个新对象，等价于按内容比对
-    remember(status, flash, windowOpen) {
+    remember(status, flash, windowOpen, sentryOn) {
         HomeStatusLines.build(
             badge = status?.let {
                 DrivingStateRules.badge(
@@ -179,7 +186,7 @@ internal fun rememberHomeStatusView(
             windowOpen = windowOpen,
             trunkOpen = status?.trunkOpen,
             sunshadeOpen = status?.sunshadeOpen,
-            sentryOn = status?.sentryOn,
+            sentryOn = sentryOn ?: status?.sentryOn,
             // 刚控过车：把结果并进第二行（闭锁那句直接被顶掉），
             // 车端报文跟上之前不要还写着「已闭锁」
             flashText = flash?.text,

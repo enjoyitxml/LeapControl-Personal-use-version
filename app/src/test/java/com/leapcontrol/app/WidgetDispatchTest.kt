@@ -136,15 +136,15 @@ class WidgetDispatchTest {
         )
         assertTrue(
             "哨兵指令发出后没写本地开合态，8 秒意图窗口与按键高亮都会失效",
-            providerSource.contains("WidgetSentryState.setOn(context, command == \"sentryOn\")"),
+            providerSource.contains("SentryLocalState.setOn(context, command == \"sentryOn\")"),
         )
         assertTrue(
             "哨兵没接 8 秒意图窗口，连点两下会开完立刻关",
-            providerSource.contains("WidgetSentryState.lastActionAt(context)"),
+            providerSource.contains("SentryLocalState.lastActionAt(context)"),
         )
         assertTrue(
             "哨兵没有用车况校准本地态",
-            providerSource.contains("WidgetSentryState.calibrateFromStatus(context, status.sentryOn)"),
+            providerSource.contains("SentryLocalState.calibrateFromStatus(context, status.sentryOn)"),
         )
         // 共享账号权限门禁仍在 controlForWidget 里（result=40 是云端权限，别改 cmdid）
         val runtime = source("app/src/main/java/com/leapcontrol/app/ui/AppRuntime.kt")

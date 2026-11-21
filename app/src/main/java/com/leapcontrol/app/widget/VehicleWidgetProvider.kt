@@ -12,6 +12,9 @@ import com.leapcontrol.app.ConfirmGate
 import com.leapcontrol.app.DoubleConfirmRules
 import com.leapcontrol.app.DrivingSafetyPolicy
 import com.leapcontrol.app.MainActivity
+import com.leapcontrol.app.SentryLocalState
+import com.leapcontrol.app.SentrySchemeRules
+import com.leapcontrol.app.SentrySchemeStore
 import com.leapcontrol.app.SessionVerdict
 import com.leapcontrol.app.tiles.QuickTiles
 import com.leapcontrol.app.ui.AppNavRequest
@@ -263,7 +266,7 @@ open class VehicleWidgetProvider : AppWidgetProvider() {
                 WidgetCommandClock.lastSendAt(context, action),
             )
             action == VehicleWidget.ACTION_SENTRY -> maxOf(
-                WidgetSentryState.lastActionAt(context),
+                SentryLocalState.lastActionAt(context),
                 WidgetCommandClock.lastSendAt(context, action),
             )
             else -> 0L
@@ -315,19 +318,26 @@ open class VehicleWidgetProvider : AppWidgetProvider() {
         val lastAnySend = WidgetCommandClock.lastSendAt(context)
         val justTapped = lastAnySend != 0L &&
             System.currentTimeMillis() - lastAnySend < QuickTiles.ACTION_GRACE_MS
+        // 副厂哨兵（后加装）：车端永远不会上报 sentryOn，判向只看本地。
+        // 也就没有「先对一次车况」的必要 —— 那 2.5 秒在 10 秒的广播预算里很贵。
+        val aftermarketSentry = action == VehicleWidget.ACTION_SENTRY &&
+            SentrySchemeStore.isAftermarket(context)
         val status = when {
             action !in DIRECTION_ACTIONS -> runtime.statusFlow.value
             // 刚点过：本地记忆就是最新意图，车端还在执行，拉回来的还是旧报文 ——
             // 不为它多等 2.5 秒，也绝不用它把方向翻回去
             justTapped -> null
+            aftermarketSentry -> null
             else -> directionStatus(context, runtime, lastAction)
         }
-        if (action in DIRECTION_ACTIONS && status != null) {
+        if (action in DIRECTION_ACTIONS && status != null && !aftermarketSentry) {
             // 校准规则与控制中心磁贴**同一份**（含 8 秒宽限期、信号 null 不动），别在这边另写
             runCatching { QuickTiles.calibrateFromStatus(context, status) }
-            // 哨兵不是磁贴，QuickTiles.ALL 里没有它，本地态单独校一次（同样守 8 秒窗口）
+            // 哨兵不是磁贴，QuickTiles.ALL 里没有它，本地态单独校一次（同样守 8 秒窗口）。
+            // 副厂方案**不校**：那台车的 sentryOn 要么读不到、要么恒为 false，
+            // 拿它校准会把用户刚开的哨兵又打回「关」（2026-11-21）。
             if (action == VehicleWidget.ACTION_SENTRY) {
-                WidgetSentryState.calibrateFromStatus(context, status.sentryOn)
+                SentryLocalState.calibrateFromStatus(context, status.sentryOn)
             }
         }
 
@@ -365,9 +375,15 @@ open class VehicleWidgetProvider : AppWidgetProvider() {
             // 与零控首页的哨兵按钮**同一条判定**：sentryOn == true 就发 sentryOff，否则发 sentryOn。
             // 车况里压根读不到这个信号（部分车型恒 null）时才退回本地开合态，
             // 否则「本地已经开着、再点一下」会又发一条 sentryOn。
-            VehicleWidget.ACTION_SENTRY ->
-                if (status?.sentryOn != null) ControlActions.resolveCommand("sentry", status)
-                else if (WidgetSentryState.isOn(context)) "sentryOff" else "sentryOn"
+            //
+            // 副厂方案只看本地：车端本来就报不出这个信号，等它等于永远判不出方向。
+            VehicleWidget.ACTION_SENTRY -> when {
+                SentrySchemeRules.usesLocalState(SentrySchemeStore.get(context)) ->
+                    SentrySchemeRules.nextAftermarket(SentryLocalState.isOn(context))
+                status?.sentryOn != null -> ControlActions.resolveCommand("sentry", status)
+                SentryLocalState.isOn(context) -> "sentryOff"
+                else -> "sentryOn"
+            }
             else -> return
         }
 
@@ -455,7 +471,7 @@ open class VehicleWidgetProvider : AppWidgetProvider() {
         if (action == VehicleWidget.ACTION_SENTRY) {
             // 指令确实发出去了才落本地开合态：发失败时不能让按键「假装」已经开了哨兵。
             // 时间戳同时开启 8 秒意图窗口（窗口内不再下发、高亮跟本地意图）。
-            WidgetSentryState.setOn(context, command == "sentryOn")
+            SentryLocalState.setOn(context, command == "sentryOn")
         }
 
         // 结果**立刻**上卡片，但**只说「已下发」**。
@@ -469,9 +485,13 @@ open class VehicleWidgetProvider : AppWidgetProvider() {
         // 颜色仍用主色（这是进展，不是失败），hint 照给（按键跟本地意图走，
         // 否则从点下到车况回来之间按键是灭的，看着像没点上）。
         // 真正的「后备箱已开启」只能由车况求证来写，见 [confirmOutcomeLater]。
+        //
+        // **副厂哨兵是唯一的例外**：它的状态就是本地记下的（[SentryLocalState]），
+        // 不存在「车端还没回话」这回事，所以直接说完成式，也不再去做那次求证。
+        val confirmedNow = aftermarketSentry
         WidgetFlash.write(
             context,
-            doneLabelOf(command, confirmed = false),
+            doneLabelOf(command, confirmed = confirmedNow),
             ok = true,
             hint = command,
         )
@@ -480,8 +500,10 @@ open class VehicleWidgetProvider : AppWidgetProvider() {
         // 回读车况从广播里挪出去（见 [scheduleFlashExpiry]）：判方向已经用掉一段网络时间，
         // 广播只有约 10 秒预算，再在广播里等回读会把尾巴拖到线上。
         scheduleFlashExpiry(context, runtime)
-        // 再看一眼车端到底动没动：这条不占广播预算，跑在进程级协程里
-        confirmOutcomeLater(context, runtime, command)
+        // 再看一眼车端到底动没动：这条不占广播预算，跑在进程级协程里。
+        // 副厂哨兵跳过 —— 那台车永远不会报 sentryOn，求证只会白跑两轮（而且它报 0 时
+        // 会写出「哨兵还没开」，与本地记录打架）。
+        if (!aftermarketSentry) confirmOutcomeLater(context, runtime, command)
     }
 
     /**
@@ -704,7 +726,7 @@ open class VehicleWidgetProvider : AppWidgetProvider() {
      */
     private fun lastDirectionActionAt(context: Context, vin: String, action: String): Long = when (action) {
         VehicleWidget.ACTION_WINDOW -> WindowControl.savedAt(context, vin)
-        VehicleWidget.ACTION_SENTRY -> WidgetSentryState.lastActionAt(context)
+        VehicleWidget.ACTION_SENTRY -> SentryLocalState.lastActionAt(context)
         else -> TOGGLE_TILES[action]
             ?.let { id -> QuickTiles.byId(id)?.let { QuickTiles.lastActionAt(context, it) } }
             ?: 0L
@@ -909,7 +931,7 @@ open class VehicleWidgetProvider : AppWidgetProvider() {
          *
          * 车窗也在这份里：它靠车况才知道「现在到底有没有窗开着」，下一档才可能是关。
          * 哨兵同理：只有读到 `sentryOn` 才能像首页那样判定该发 sentryOn 还是 sentryOff；
-         * "sentry" 不是磁贴 id，`QuickTiles.byId` 会返回 null，本地态单独走 [WidgetSentryState]。
+         * "sentry" 不是磁贴 id，`QuickTiles.byId` 会返回 null，本地态单独走 [SentryLocalState]。
          */
         val DIRECTION_TILES: Map<String, String> =
             TOGGLE_TILES +

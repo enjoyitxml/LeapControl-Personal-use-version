@@ -145,6 +145,8 @@ import com.leapcontrol.app.QuickPart
 import com.leapcontrol.app.QuickSwitchPrefs
 import com.leapcontrol.app.QuickTarget
 import com.leapcontrol.app.R
+import com.leapcontrol.app.AftermarketSentryTip
+import com.leapcontrol.app.SentrySchemeRules
 import com.leapcontrol.app.VehicleCapabilities
 import com.leapcontrol.app.VehicleModels
 import com.leapcontrol.app.journal.JournalDates
@@ -299,6 +301,17 @@ fun HomeScreen(
         val coachContext = LocalContext.current
         // 车窗档位存在 prefs（按 VIN），和界面状态无关，读一次内存值即可
         val appContext = coachContext.applicationContext
+        // ---- 哨兵模式方案（原厂 / 副厂，2026-11-21）----
+        // 副厂（后加装）车端不会上报「哨兵已开启」，开合状态记在本机，
+        // 显示与判向都以本地为准；原厂方案完全走老路（下面各处都判 usesLocalState）。
+        val sentryScheme by runtime.sentrySchemeFlow.collectAsState()
+        val sentryLocalRev by runtime.sentryLocalRevFlow.collectAsState()
+        // status 也进 key：桌面小组件改了本地态之后，App 下次拉到车况就会重读一次
+        val sentryLocalOn = remember(sentryScheme, sentryLocalRev, status) {
+            SentrySchemeRules.usesLocalState(sentryScheme) && runtime.sentryLocalOn()
+        }
+        // 副厂方案第一次开哨兵前的那次说明弹窗
+        var showAftermarketSentryTip by remember { mutableStateOf(false) }
         var coachVisible by remember { mutableStateOf(!PlaybookHint.isDone(coachContext)) }
         // 玩法说明图标在 root 里的位置：顶栏图标会随「个性化」开关增减，写死偏移一定对不准
         var playbookAnchor by remember { mutableStateOf(Rect.Zero) }
@@ -843,11 +856,17 @@ fun HomeScreen(
         )
 
         /** 按钮 id → 本次真正下发的指令（车窗带档位，其余按车况取反）。 */
-        fun resolveControl(cellId: String): String = ControlActions.resolveCommand(
-            cellId,
-            status,
-            if (cellId == "window") windowStageNow() else null,
-        )
+        fun resolveControl(cellId: String): String =
+            // 副厂哨兵：车端那个信号读不到，方向只能按本地记录取反
+            if (cellId == "sentry" && SentrySchemeRules.usesLocalState(sentryScheme)) {
+                SentrySchemeRules.nextAftermarket(sentryLocalOn)
+            } else {
+                ControlActions.resolveCommand(
+                    cellId,
+                    status,
+                    if (cellId == "window") windowStageNow() else null,
+                )
+            }
 
         /**
          * cellId 为按钮 id；复合按钮（后备箱/车窗/遮阳帘）在此解析成开或关指令。
@@ -1956,6 +1975,8 @@ fun HomeScreen(
                         flash = controlFlash,
                         // 车况读不到时用本地档位兜底，与快捷控车按钮的高亮同源
                         windowOpen = windowOpenDisplayNow(),
+                        // 副厂哨兵：车端报不出状态，右上角直接按本地记录写「哨兵已开启」
+                        sentryOn = if (SentrySchemeRules.usesLocalState(sentryScheme)) sentryLocalOn else null,
                     )
                 } else {
                     HomeStatusText(
@@ -1963,6 +1984,7 @@ fun HomeScreen(
                         modifier = Modifier.padding(top = 6.dp),
                         flash = controlFlash,
                         windowOpen = windowOpenDisplayNow(),
+                        sentryOn = if (SentrySchemeRules.usesLocalState(sentryScheme)) sentryLocalOn else null,
                     )
                 }
             }
@@ -2137,6 +2159,9 @@ fun HomeScreen(
                                     // 点完立刻变，比只看右上角那句提示更直观。
                                     val windowStage = if (cellId == "window") windowStageNow() else null
                                     val active = when {
+                                        // 副厂哨兵没有车况可看，高亮跟本地记录走
+                                        cellId == "sentry" &&
+                                            SentrySchemeRules.usesLocalState(sentryScheme) -> sentryLocalOn
                                         windowStage != null -> WindowControl.isOpen(windowStage)
                                         else -> ControlActions.isActive(cellId, status)
                                     }
@@ -2171,9 +2196,20 @@ fun HomeScreen(
                                                     windowMenuOpen = true
                                                 }
                                             } else {
-                                                val command = resolveControl(cellId)
-                                                ensureConfirmed(ControlActions.commandLabel(command)) {
-                                                    runControl(cellId, command)
+                                                // 副厂方案**第一次**开哨兵：先说明「状态存本地、再点即可关闭」。
+                                                // 这条弹窗本身就是确认框，所以不再套一次 ensureConfirmed
+                                                // （开了「控车二次确认」的人不该连看两个弹窗）。
+                                                if (cellId == "sentry" &&
+                                                    SentrySchemeRules.usesLocalState(sentryScheme) &&
+                                                    !sentryLocalOn &&
+                                                    !AftermarketSentryTip.isShown(coachContext)
+                                                ) {
+                                                    showAftermarketSentryTip = true
+                                                } else {
+                                                    val command = resolveControl(cellId)
+                                                    ensureConfirmed(ControlActions.commandLabel(command)) {
+                                                        runControl(cellId, command)
+                                                    }
                                                 }
                                             }
                                         },
@@ -2543,6 +2579,40 @@ fun HomeScreen(
                 dismissButton = {
                     TextButton(onClick = { showRenameDialog = false }) {
                         Text("取消", color = LocalAppColors.current.textSecondary)
+                    }
+                },
+            )
+        }
+
+        // ---- 副厂哨兵方案：第一次开之前的说明（状态存本地，再点即关）----
+        if (showAftermarketSentryTip) {
+            val C = LocalAppColors.current
+            AlertDialog(
+                onDismissRequest = { showAftermarketSentryTip = false },
+                containerColor = C.dialogBg,
+                title = { Text("副厂哨兵方案", color = C.textPrimary) },
+                text = {
+                    Text(
+                        "后加装的哨兵不会向车端回报开启状态。选择副厂方案后，"
+                            + "点击开启哨兵不再等待车端回执，开合状态保存在本机；"
+                            + "开启后再次点击这颗按钮即可关闭。\n\n"
+                            + "由于没有车端回执，开启后需自行观察车辆后视镜是否已打开，"
+                            + "确认哨兵确实在工作。",
+                        color = C.textSecondary,
+                        fontSize = 13.sp,
+                        lineHeight = 20.sp,
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        AftermarketSentryTip.markShown(appContext)
+                        showAftermarketSentryTip = false
+                        runControl("sentry", "sentryOn")
+                    }) { Text("开启哨兵", color = C.accent) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showAftermarketSentryTip = false }) {
+                        Text("取消", color = C.textSecondary)
                     }
                 },
             )
@@ -3521,7 +3591,7 @@ private fun backdropLabelShadow(dark: Boolean): Shadow = Shadow(
 
 /**
  * 控车按钮自定义：调整顺序（上移/下移）、移除、添加。
- * 约束：最少保留 3 个，最多 7 个（第 8 格固定为编辑按钮）。
+ * 约束：最少保留 3 个，**上限不设**——本车支持的按钮都能加（首页控车行横向滚动）。
  */
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
@@ -3543,7 +3613,7 @@ private fun ControlEditorDialog(
         text = {
             Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                 Text(
-                    "最多 ${ControlActions.MaxSelectable} 个（双行共 8 格，最后一格为编辑），最少 ${ControlActions.MinSelectable} 个",
+                    "本车支持的按钮都可以添加，至少保留 ${ControlActions.MinSelectable} 个；放不下的左右滑动查看",
                     color = LocalAppColors.current.textSecondary,
                     fontSize = 12.sp,
                 )
@@ -3584,7 +3654,7 @@ private fun ControlEditorDialog(
                         }
                     }
                 }
-                val canAdd = items.size < ControlActions.MaxSelectable
+                // 不设上限：还没加的、本车支持的一律可加；全加完这块整段自动收起
                 val available = ControlActions.all.filter { it.id !in items && it.available(capabilities) }
                 if (available.isNotEmpty()) {
                     Spacer(Modifier.height(8.dp))
@@ -3596,8 +3666,7 @@ private fun ControlEditorDialog(
                     ) {
                         available.forEach { action ->
                             androidx.compose.material3.AssistChip(
-                                onClick = { if (canAdd) items.add(action.id) },
-                                enabled = canAdd,
+                                onClick = { items.add(action.id) },
                                 label = { Text(action.label, fontSize = 12.sp) },
                                 leadingIcon = {
                                     Icon(painterResource(action.iconRes), null, modifier = Modifier.size(16.dp))

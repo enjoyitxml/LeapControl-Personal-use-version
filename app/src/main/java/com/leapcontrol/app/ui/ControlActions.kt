@@ -165,16 +165,18 @@ object ControlActions {
     /** 按钮 id + 当前车况 → 弹窗文案；与 [resolveCommand] 共用同一份开/关判定。 */
     fun confirmLabel(id: String, status: CarStatus?): String = commandLabel(resolveCommand(id, status))
 
-    /** 解析已保存的顺序，过滤掉已下线指令并保证最少 3 个。 */
+    /**
+     * 解析已保存的顺序，过滤掉已下线指令并保证最少 3 个。
+     *
+     * **不截断数量**（2026-11-21 用户要求：本车支持的全部能加，不再卡 7 个）。
+     * 首页快捷控车早已是**横向滚动的一行**（一行显示 4 个、左右滑动看其余），
+     * 不再需要留第 8 格给编辑键，所以上限只由「[all] 里本车支持的按钮数」决定。
+     */
     fun sanitize(saved: List<String>): List<String> {
         val valid = saved.filter { id -> all.any { it.id == id } }.distinct()
-        return when {
-            valid.size >= 3 -> valid.take(MaxSelectable)
-            else -> defaultLayout
-        }
+        return if (valid.size >= MinSelectable) valid else defaultLayout
     }
 
-    /** 编辑按钮固定占最后一格，因此最多可选 7 个（双行 8 格）。 */
-    const val MaxSelectable = 7
+    /** 少于此数就退回默认布局（编辑页也据此禁掉删除）。 */
     const val MinSelectable = 3
 }

@@ -75,8 +75,13 @@ internal fun VehicleStatusColumn(
     flash: ControlFeedback.Flash? = null,
     /** 显示用的「车窗是否开着」，首页传 [WindowControl.openForDisplay] 的结果（见该函数注释）。 */
     windowOpen: Boolean? = status?.windowOpen,
+    /**
+     * 「哨兵是否开着」的显示值。null = 原厂方案，照旧取车况；
+     * 副厂方案（后加装）车端报不出这个信号，传本地记录进来。
+     */
+    sentryOn: Boolean? = null,
 ) {
-    val rows = rememberVehicleStatusRows(status, windowOpen)
+    val rows = rememberVehicleStatusRows(status, windowOpen, sentryOn)
     // 刚控过车：先让「车辆解锁中… / 车辆已解锁」顶掉它对应的那一行，
     // 车端报文要 5~15 秒才更新，这期间还写「车辆已闭锁」就是在骗人
     // （2026-11-05 反馈：App 里控车后右上角不跟着变）。
@@ -247,8 +252,9 @@ internal fun vehicleStatusRows(
 private fun rememberVehicleStatusRows(
     status: CarStatus?,
     windowOpen: Boolean? = status?.windowOpen,
+    sentryOn: Boolean? = null,
 ): List<VehicleStatusRow> =
-    remember(status, windowOpen) {
+    remember(status, windowOpen, sentryOn) {
         if (status == null) {
             emptyList()
         } else {
@@ -258,7 +264,7 @@ private fun rememberVehicleStatusRows(
                 windowOpen = windowOpen,
                 trunkOpen = status.trunkOpen,
                 sunshadeOpen = status.sunshadeOpen,
-                sentryOn = status.sentryOn,
+                sentryOn = sentryOn ?: status.sentryOn,
             )
         }
     }

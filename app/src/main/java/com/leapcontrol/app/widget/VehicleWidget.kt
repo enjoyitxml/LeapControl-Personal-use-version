@@ -16,6 +16,9 @@ import com.leapcontrol.app.MainActivity
 import com.leapcontrol.app.DEFAULT_VEHICLE_TITLE
 import com.leapcontrol.app.PERSONAL_EDITION
 import com.leapcontrol.app.R
+import com.leapcontrol.app.SentryLocalState
+import com.leapcontrol.app.SentrySchemeRules
+import com.leapcontrol.app.SentrySchemeStore
 import com.leapcontrol.app.tiles.QuickTiles
 import com.leapcontrol.app.tiles.statusOn
 import com.leapcontrol.app.ui.AppNavRequest
@@ -906,6 +909,15 @@ object VehicleWidget {
     }
 
     /**
+     * 副厂方案下显示用的哨兵状态（取本地记录）；原厂返回 null = 照旧只看车况。
+     *
+     * 后加装的哨兵不会把「已开启」写进车端信号，车况里那一项要么读不到、要么恒为 false，
+     * 所以副厂方案下这一行只能信本地（[SentryLocalState]），与按键点击判向同源。
+     */
+    private fun sentryOnOverride(context: Context): Boolean? =
+        if (SentrySchemeStore.isAftermarket(context)) SentryLocalState.isOn(context) else null
+
+    /**
      * 全量与增量共用的「会变的内容」：状态文案、续航数字与进度条、车模、按键高亮。
      *
      * 往这里加东西是安全的（两条路径都会生效）；**别把背景 / 字号 / 内边距 / 点击写进来**，
@@ -949,20 +961,26 @@ object VehicleWidget {
                 pinReady = pinReady,
                 flashText = flash?.text,
                 flashOk = flash?.ok ?: true,
-                state = status?.let {
-                    WidgetStatusText.State(
-                        locked = it.locked,
-                        acOn = it.acOn,
-                        trunkOpen = it.trunkOpen,
-                        windowOpen = it.windowOpen,
-                        batteryPreheatOn = it.batteryPreheatOn,
-                        sunshadeOpen = it.sunshadeOpen,
-                        sentryOn = it.sentryOn,
-                        chargeState = it.chargeState,
-                        charging = it.charging,
-                        chargeRemainMinutes = it.chargeRemainMinutes,
-                        chargeTimeLeft = it.chargeTimeLeft,
+                // 副厂哨兵：状态记在本地，车况里那个信号永远是空的（或恒 false）。
+                // null = 原厂方案，照旧只看车况。
+                state = when {
+                    status != null -> WidgetStatusText.State(
+                        locked = status.locked,
+                        acOn = status.acOn,
+                        trunkOpen = status.trunkOpen,
+                        windowOpen = status.windowOpen,
+                        batteryPreheatOn = status.batteryPreheatOn,
+                        sunshadeOpen = status.sunshadeOpen,
+                        sentryOn = sentryOnOverride(context) ?: status.sentryOn,
+                        chargeState = status.chargeState,
+                        charging = status.charging,
+                        chargeRemainMinutes = status.chargeRemainMinutes,
+                        chargeTimeLeft = status.chargeTimeLeft,
                     )
+                    // 副厂方案刚开完哨兵、车况还没拉回来：不能因为整块车况是空的
+                    // 就把「哨兵已开启」一起丢掉（那会退回「正在同步…」）
+                    sentryOnOverride(context) == true -> WidgetStatusText.State(sentryOn = true)
+                    else -> null
                 },
                 clock = clock,
                 fullConfirmed = ChargeStatus.fullConfirmed(status?.chargeState, status?.soc),
@@ -1100,7 +1118,7 @@ object VehicleWidget {
             WidgetButtonId.WINDOW -> "window"
             WidgetButtonId.BATTERY_PREHEAT -> "batteryPreheat"
             WidgetButtonId.SUNSHADE -> "sunshade"
-            // 不是磁贴，但 statusOn 里补了这份映射；本地态走 WidgetSentryState
+            // 不是磁贴，但 statusOn 里补了这份映射；本地态走 SentryLocalState
             WidgetButtonId.SENTRY -> "sentry"
             // 上锁键不亮（车多数时间锁着）、鸣笛是瞬时动作，都没有常驻开合态
             WidgetButtonId.UNLOCK, WidgetButtonId.LOCK, WidgetButtonId.HORN -> null
@@ -1109,13 +1127,15 @@ object VehicleWidget {
         fun normallyOn(id: WidgetButtonId): Boolean {
             if (id == WidgetButtonId.UNLOCK) return locked == false
             // 哨兵没有对应磁贴：意图窗口内跟本地意图走，其余时候车况优先、本地兜底。
-            // 判据与开关型磁贴完全一致，只是状态存在 WidgetSentryState 里。
+            // 判据与开关型磁贴完全一致，只是状态存在 SentryLocalState 里。
             if (id == WidgetButtonId.SENTRY) {
                 val now = System.currentTimeMillis()
-                if (WidgetTapRules.withinIntentWindow(WidgetSentryState.lastActionAt(context), now)) {
-                    return WidgetSentryState.isOn(context)
+                if (WidgetTapRules.withinIntentWindow(SentryLocalState.lastActionAt(context), now)) {
+                    return SentryLocalState.isOn(context)
                 }
-                return statusOn("sentry", status) ?: WidgetSentryState.isOn(context)
+                // 副厂方案（后加装）车端报不出哨兵状态，只能以本地记录为准
+                if (SentrySchemeStore.isAftermarket(context)) return SentryLocalState.isOn(context)
+                return statusOn("sentry", status) ?: SentryLocalState.isOn(context)
             }
             val key = tileIdOf(id) ?: return false
             val spec = QuickTiles.byId(key)

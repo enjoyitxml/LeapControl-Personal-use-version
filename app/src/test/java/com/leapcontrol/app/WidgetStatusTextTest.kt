@@ -241,8 +241,10 @@ class WidgetStatusTextTest {
         assertTrue(
             "车况信号没喂全（含充电剩余时长）",
             listOf(
-                "sentryOn = it.sentryOn", "batteryPreheatOn = it.batteryPreheatOn",
-                "chargeRemainMinutes = it.chargeRemainMinutes",
+                // 哨兵多了一层方案判断：副厂（后加装）车端报不出状态，显示值取本地记录
+                "sentryOn = sentryOnOverride(context) ?: status.sentryOn",
+                "batteryPreheatOn = status.batteryPreheatOn",
+                "chargeRemainMinutes = status.chargeRemainMinutes",
             ).all { widget.contains(it) },
         )
     }

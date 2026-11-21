@@ -80,7 +80,7 @@ internal fun statusOn(id: String, status: CarStatus?): Boolean? = when (id) {
     "sunshade" -> status?.sunshadeOpen
     "batteryPreheat" -> status?.batteryPreheatOn
     // 哨兵不是一块磁贴（QuickTiles.ALL 固定 8 块），但小组件复用这份映射给按键上色：
-    // 车况有准话信车况，读不到才退回 WidgetSentryState 的本地态。
+    // 车况有准话信车况，读不到才退回 SentryLocalState 的本地态。
     "sentry" -> status?.sentryOn
     else -> null
 }

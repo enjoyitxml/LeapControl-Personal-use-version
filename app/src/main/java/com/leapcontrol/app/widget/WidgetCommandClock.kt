@@ -7,7 +7,7 @@ import android.content.Context
  *
  * ## 为什么另起一张表
  * [com.leapcontrol.app.tiles.QuickTiles] 里的 `state_at_<id>` 只覆盖四块开关磁贴
- * （空调 / 后备箱 / 电池预热 / 遮阳帘），车窗走 `WindowControl`、哨兵走 [WidgetSentryState]，
+ * （空调 / 后备箱 / 电池预热 / 遮阳帘），车窗走 `WindowControl`、哨兵走 [SentryLocalState]，
  * 而**解锁、上锁、鸣笛一处都没记**。于是「点完解锁，2 秒后又点开后备箱」这件事，
  * 在源码里完全不可见 ——
  *

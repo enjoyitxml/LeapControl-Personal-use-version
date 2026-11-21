@@ -66,7 +66,11 @@ import com.leapcontrol.app.ScheduledAcLinkageScheduler
 import com.leapcontrol.app.ScheduledAcPlan
 import com.leapcontrol.app.ScheduledAcState
 import com.leapcontrol.app.ScheduledPreheatState
+import com.leapcontrol.app.SentryLocalState
 import com.leapcontrol.app.SentryModeControlPolicy
+import com.leapcontrol.app.SentryScheme
+import com.leapcontrol.app.SentrySchemeRules
+import com.leapcontrol.app.SentrySchemeStore
 import com.leapcontrol.app.SteeringWheelHeat
 import com.leapcontrol.app.ObfuscatedSecrets
 import com.leapcontrol.app.QuickSwitchMode
@@ -872,8 +876,52 @@ class AppRuntime(context: Context) {
     }
 
     fun setControlLayout(ids: List<String>) {
-        val clean = ControlActions.sanitize(ids).take(ControlActions.MaxSelectable)
+        // sanitize 已保证 3~全部可用按钮，不再另设上限（首页控车行是横向滚动的）
+        val clean = ControlActions.sanitize(ids)
         namingPrefs.edit().putString("control_layout_${session.selectedVin}", clean.joinToString(",")).apply()
+    }
+
+    // ---------------- 哨兵模式方案（原厂 / 副厂，2026-11-21） ----------------
+    //
+    // 副厂（后加装）拿不到车端「哨兵已开启」的回执：车况里 `sentryOn` 要么读不到、
+    // 要么恒 false。所以副厂方案把开合状态记在本机（[SentryLocalState]），
+    // 下发即算完成、不再等回执与求证；原厂方案一行都不改，仍走原来的链路。
+
+    private val _sentryScheme = MutableStateFlow(SentrySchemeStore.get(appContext))
+
+    /**
+     * 当前方案。初始值读磁盘，设置页改完立刻写回 flow ——
+     * 首页右上角、按钮高亮与判向不用等下次进页面才换口径。
+     */
+    val sentrySchemeFlow: StateFlow<SentryScheme> = _sentryScheme.asStateFlow()
+
+    fun sentryScheme(): SentryScheme = _sentryScheme.value
+
+    fun setSentryScheme(scheme: SentryScheme) {
+        SentrySchemeStore.set(appContext, scheme)
+        _sentryScheme.value = scheme
+    }
+
+    /**
+     * App 内改过本地哨兵状态的次数。
+     *
+     * 副厂方案下点完哨兵，车况**不会**变（车端本来就不报），首页那套
+     * 「车况一变就重算」的 remember 收不到信号，所以另给一个版本来触发重读。
+     */
+    private val _sentryLocalRev = MutableStateFlow(0)
+    val sentryLocalRevFlow: StateFlow<Int> = _sentryLocalRev.asStateFlow()
+
+    /**
+     * 副厂方案的开合态。**每次都读磁盘**，不在内存里缓存副本：
+     * 桌面小组件是另一个入口，它会直接改同一份 prefs，缓存会让
+     * 「桌面开了哨兵、App 里还显示没开」。
+     */
+    fun sentryLocalOn(): Boolean = SentryLocalState.isOn(appContext)
+
+    /** 副厂方案下发成功后记一笔（同时开启 8 秒意图窗口）。 */
+    fun rememberSentryLocal(on: Boolean) {
+        SentryLocalState.setOn(appContext, on)
+        _sentryLocalRev.value = _sentryLocalRev.value + 1
     }
 
     // ---------------- 首页功能模块（顺序 / 增删） ----------------
@@ -3588,6 +3636,13 @@ class AppRuntime(context: Context) {
         // 方向盘加热也走这里 —— 上游在发指令前就写 optimisticSteeringWheelHeating，
         // 少了这一行，界面会一直显示车端滞后的旧档位。
         rememberComfortTarget(commandName)
+        // 副厂哨兵（后加装）：车端不会写「已开启」那个信号，等下去必然超时。
+        // 指令确实到网关之后才记本地状态 —— 发失败不能让按钮「假装」已经开着；
+        // 记完直接给完成式（状态就是本地这一笔），不再去 web 端求证。
+        if (SentrySchemeRules.skipsReceipt(SentrySchemeStore.get(appContext), commandName)) {
+            rememberSentryLocal(commandName == "sentryOn")
+            return@withContext SentrySchemeRules.doneText(commandName)
+        }
         // 不等回执的调用方：指令已经到网关，剩下的交给调用方回读车况判断
         if (resultWaitMs == 0L) return@withContext "${command.label}指令已下发"
         // 轮询执行结果：车端 T-Box 唤醒 + 执行通常需要数秒，官方抓包协议允许最长 24 秒。
@@ -3751,6 +3806,12 @@ class AppRuntime(context: Context) {
             val result = sendControlWatched(api, command, pin)
             // 指令已到网关：记下目标档位，后续车况刷新在保护窗口内不会把它弹回旧值
             rememberComfortTarget(commandName)
+            // 副厂哨兵：不等那 3.5 秒的回执轮询（车端根本不会认这条信号），
+            // 状态记本地，直接把完成式交给小组件 —— 卡片右上角要能立刻写「哨兵已开启」
+            if (SentrySchemeRules.skipsReceipt(SentrySchemeStore.get(appContext), commandName)) {
+                rememberSentryLocal(commandName == "sentryOn")
+                return@withContext SentrySchemeRules.doneText(commandName)
+            }
             val deadline = System.currentTimeMillis() + budgetMs
             var attempt = 0
             while (System.currentTimeMillis() < deadline) {
