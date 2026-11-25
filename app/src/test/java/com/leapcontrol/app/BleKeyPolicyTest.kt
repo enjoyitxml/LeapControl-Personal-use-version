@@ -3,6 +3,7 @@ package com.leapcontrol.app
 import com.leapcontrol.app.bluetooth.BleAccessPolicy
 import com.leapcontrol.app.bluetooth.BleConnectionPhase
 import com.leapcontrol.app.bluetooth.BleConnectionState
+import com.leapcontrol.app.bluetooth.BleGattInitializationPolicy
 import com.leapcontrol.app.bluetooth.BleKeyBootPolicy
 import com.leapcontrol.app.bluetooth.BleLockAction
 import com.leapcontrol.app.bluetooth.BleManagedKey
@@ -197,6 +198,23 @@ class BleKeyPolicyTest {
         assertFalse(BleReconnectPolicy.shouldAttemptDirectFallback(foreground = false, consecutiveMissCount = 4))
         assertTrue(BleReconnectPolicy.shouldAttemptDirectFallback(foreground = false, consecutiveMissCount = 5))
         assertTrue(BleReconnectPolicy.shouldAttemptDirectFallback(foreground = false, consecutiveMissCount = 10))
+    }
+
+    @Test
+    fun `只有系统扫描限流才退避三十秒`() {
+        // errorCode=6 是「扫描过于频繁」，射频正被惩罚，直连也拿不到广播
+        assertEquals(30_000L, BleReconnectPolicy.scanFailedBackoffMillis(6))
+        // 其它失败码照旧走直连兜底，不能平白多等半分钟
+        listOf(1, 2, 3, 4, 5, 0, 133).forEach {
+            assertEquals("errorCode=$it 不该退避", null, BleReconnectPolicy.scanFailedBackoffMillis(it))
+        }
+    }
+
+    @Test
+    fun `自愈重连的等待窗口不能为 0`() {
+        // 旧句柄 close 之后协议栈要一点时间才真的掉线，立刻重连会拿到 133；
+        // 这个值调小到 0 就等于关掉自愈，必须有下界。
+        assertTrue(BleGattInitializationPolicy.relinkDelayMs in 200L..1_000L)
     }
 
     // ---- 配置与绑定的一致性 ----

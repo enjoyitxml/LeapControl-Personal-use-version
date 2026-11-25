@@ -7,7 +7,11 @@
      只有 even-odd 才能正确挖空成线稿（实测 nonZero 会把叶片填成实心块、中心圆环的孔也一起糊掉）。
 
      为什么加 stroke：原图轮廓在这个尺寸下只有 0.73dp，放进控制中心会比其它磁贴（约 1.5dp）明显发虚。
-     加同色 28（≈0.68dp）把线宽补到 1.4dp，是图标家族统一的常规做法。 -->
+     加同色 28（≈0.64dp）把线宽补到 1.37dp，是图标家族统一的常规做法。
+
+     缩放系数的来历：0.0243491 时图形外接 20.94dp（加 stroke 21.62dp），比车窗（20.2dp）、
+     车锁（18.7dp）都大一圈 —— 圆形满幅本来就比方形显大。这里按 0.94 收到 19.7dp（加 stroke 20.3dp），
+     和那两颗的视觉重量对齐。**再改就顺着这个基准等比动，别单独改 translate**（pivot 在图形中心，等比缩放不会偏）。 -->
 
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
@@ -17,8 +21,8 @@
     <group
         android:pivotX="512"
         android:pivotY="512"
-        android:scaleX="0.0243491"
-        android:scaleY="0.0243491"
+        android:scaleX="0.0228881"
+        android:scaleY="0.0228881"
         android:translateX="-500"
         android:translateY="-500">
         <path

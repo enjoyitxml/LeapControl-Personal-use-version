@@ -38,6 +38,7 @@ enum class BleDiagnosticEvent(val label: String) {
     KEY_DERIVED("会话密钥派生完成"),
     KEY_DERIVATION_FAILED("钥匙解析或派生失败"),
     GATT_STATE("系统蓝牙连接回调"),
+    LINK_RELINK("释放句柄自愈重连"),
     SERVICES_DISCOVERED("车辆服务发现回调"),
     SERVICE_UNAVAILABLE("车辆钥匙服务不匹配"),
     NOTIFICATIONS_REQUESTED("订阅车辆通知"),

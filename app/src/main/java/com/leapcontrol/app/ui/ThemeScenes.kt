@@ -15,7 +15,7 @@ import kotlin.math.sin
 /**
  * 主题背景场景。
  *
- * 40 套主题全部用 Canvas 实时绘制，没有一张图片、也没有视频文件：
+ * 50 套主题全部用 Canvas 实时绘制，没有一张图片、也没有视频文件：
  *  - 静态场景在布局阶段画一次，之后零开销；
  *  - 动态场景只把「时间进度 t」当参数，重绘走 draw 阶段，不触发 recomposition。
  *
@@ -75,6 +75,20 @@ enum class SceneKind(val animated: Boolean) {
     SNOW_FALL(true),
     CLOUD_MOON(true),
     NIGHT_WAVES(true),
+
+    // ---- 节日 10 套（日间 5 + 夜间 5，绘制见 ThemeScenesFestival.kt） ----
+    // 日间：两静（雪原松林 / 金桔贺岁）+ 三动（雪地雪人 / 金屑升起 / 爆竹迎春）
+    XMAS_SNOWFIELD(false),
+    SPRING_KUMQUAT(false),
+    XMAS_SNOWMAN(true),
+    NEWYEAR_CONFETTI(true),
+    SPRING_FIRECRACKER(true),
+    // 夜间：两静（雪夜小屋 / 红梅映雪）+ 三动（灯串微闪 / 跨年烟花 / 孔明灯升空）
+    XMAS_VILLAGE_NIGHT(false),
+    SPRING_PLUM_SNOW(false),
+    XMAS_TWINKLE(true),
+    NEWYEAR_FIREWORKS(true),
+    SPRING_SKY_LANTERNS(true),
 }
 
 /**
@@ -717,5 +731,18 @@ internal fun DrawScope.paintScene(kind: SceneKind, t: Float, p: ScenePalette) {
         SceneKind.SNOW_FALL -> drawSnowFall(t, p)
         SceneKind.CLOUD_MOON -> drawCloudMoon(t, p)
         SceneKind.NIGHT_WAVES -> drawNightWaves(t, p)
+
+        // ---------------- 节日 10 套（见 ThemeScenesFestival.kt） ----------------
+        SceneKind.XMAS_SNOWFIELD -> drawXmasSnowfield(p)
+        SceneKind.SPRING_KUMQUAT -> drawSpringKumquat(p)
+        SceneKind.XMAS_SNOWMAN -> drawXmasSnowman(t, p)
+        SceneKind.NEWYEAR_CONFETTI -> drawNewyearConfetti(t, p)
+        SceneKind.SPRING_FIRECRACKER -> drawSpringFirecracker(t, p)
+
+        SceneKind.XMAS_VILLAGE_NIGHT -> drawXmasVillageNight(p)
+        SceneKind.SPRING_PLUM_SNOW -> drawSpringPlumSnow(p)
+        SceneKind.XMAS_TWINKLE -> drawXmasTwinkle(t, p)
+        SceneKind.NEWYEAR_FIREWORKS -> drawNewyearFireworks(t, p)
+        SceneKind.SPRING_SKY_LANTERNS -> drawSpringSkyLanterns(t, p)
     }
 }

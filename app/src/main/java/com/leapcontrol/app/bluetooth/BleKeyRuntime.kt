@@ -317,7 +317,19 @@ class BleKeyRuntime private constructor(context: Context) {
             }
             override fun onScanFailed(errorCode: Int) {
                 cancelProbe()
-                connectDirect(targetDevice, certificate, bound.accountId, targetDesired, credentialScope, current)
+                val reason = controller.scanFailureReason(errorCode)
+                controller.recordDiagnostic(BleDiagnosticEvent.SCAN_FAILED, errorCode, extra = reason)
+                val backoff = BleReconnectPolicy.scanFailedBackoffMillis(errorCode)
+                if (backoff != null) {
+                    // 系统扫描限流（errorCode=6）时别接着直连：射频正被惩罚，
+                    // 直连同样拿不到广播，只会白堆「未在车辆附近」的次数。
+                    // 退避到惩罚窗口过去，再照常走探测。
+                    consecutiveMissCount = maxOf(consecutiveMissCount, 3)
+                    controller.updateStateMessage("系统扫描限流中，30秒后恢复待命")
+                    scheduleProbeRetry(backoff)
+                } else {
+                    connectDirect(targetDevice, certificate, bound.accountId, targetDesired, credentialScope, current)
+                }
             }
         }
         probeCallback = callback
@@ -376,9 +388,9 @@ class BleKeyRuntime private constructor(context: Context) {
         ) { identity == current && validSession() }
     }
 
-    private fun scheduleProbeRetry() {
+    private fun scheduleProbeRetry(customDelayMs: Long? = null) {
         if (retry != null || !runningValue.value) return
-        val delayMs = BleReconnectPolicy.probeDelayMillis(foreground, inCarMediaActive, consecutiveMissCount)
+        val delayMs = customDelayMs ?: BleReconnectPolicy.probeDelayMillis(foreground, inCarMediaActive, consecutiveMissCount)
         retry = Runnable {
             retry = null
             reconnectManaged()
@@ -555,4 +567,13 @@ object BleReconnectPolicy {
      */
     fun shouldAttemptDirectFallback(foreground: Boolean, consecutiveMissCount: Int): Boolean =
         !foreground && consecutiveMissCount > 0 && consecutiveMissCount % 5 == 0
+
+    /**
+     * 扫描直接被系统拒掉时要退避多久；返回 null 表示不必退避、照常走后面的直连兜底。
+     *
+     * 只处理 `errorCode=6`（SCAN_FAILED_SCANNING_TOO_FREQUENTLY）：这是系统对
+     * 「短时间内反复 startScan」的惩罚，扫描和直连都会被射频层压住，只能等。
+     * 官方 App 的抓包里这个窗口就是 30 秒量级。
+     */
+    fun scanFailedBackoffMillis(errorCode: Int): Long? = if (errorCode == 6) 30_000L else null
 }

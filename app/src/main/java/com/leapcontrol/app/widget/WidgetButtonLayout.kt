@@ -95,7 +95,8 @@ object WidgetButtonLayout {
  * @param title 中文标签（写进 `setContentDescription`，也是配置页里显示的名字）
  * @param action 广播 action 字符串。前 5 个沿用 [VehicleWidget] 里既有的常量值，后续新增的与
  *   `VehicleWidget.ACTIONS` / `VehicleWidgetProvider` 的 `when` 一一对应。
- * @param iconRes 直接复用现成的 `ic_qc_*` 图标，不自绘矢量。
+ * @param iconRes 复用现成的 `ic_qc_*` 图标；唯一例外是空调 —— 雪花在冬天看着冷，
+ *   小组件里换成三叶风扇（`ic_widget_ac_fan`，位图，见 [AC] 那行的说明）。
  */
 enum class WidgetButtonId(
     val title: String,
@@ -104,7 +105,11 @@ enum class WidgetButtonId(
 ) {
     UNLOCK("解锁", "com.leapcontrol.app.widget.UNLOCK", R.drawable.ic_qc_unlock),
     LOCK("上锁", "com.leapcontrol.app.widget.LOCK", R.drawable.ic_qc_lock),
-    AC("空调", "com.leapcontrol.app.widget.TOGGLE_AC", R.drawable.ic_qc_ac),
+    // 空调：小组件里不用雪花（冬天看着冷），换成三叶风扇。
+    // 这张是**位图**不是矢量：图形取 78% 画布、与同组线稿图标的外接框一致，
+    // 渲染走 setImageViewResource + setColorFilter（SRC_ATOP 只换颜色、保留抗锯齿），
+    // 位图跨进程到桌面进程染色比矢量稳；首页 / 右上角提示仍是雪花，两边互不影响。
+    AC("空调", "com.leapcontrol.app.widget.TOGGLE_AC", R.drawable.ic_widget_ac_fan),
     TRUNK("后备箱", "com.leapcontrol.app.widget.TOGGLE_TRUNK", R.drawable.ic_qc_trunk),
     HORN("鸣笛寻车", "com.leapcontrol.app.widget.HORN", R.drawable.ic_qc_horn),
     WINDOW("车窗", "com.leapcontrol.app.widget.WINDOW", R.drawable.ic_qc_window),

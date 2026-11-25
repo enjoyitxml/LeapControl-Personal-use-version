@@ -36,7 +36,7 @@ import com.leapcontrol.app.MileageEnergySummary
 import com.leapcontrol.app.R
 
 /**
- * 仅 debug 包的主题预览页：把 20 套背景按真实尺寸画出来，用来核对观感与文字可读性。
+ * 仅 debug 包的主题预览页：把内置主题按真实尺寸画出来，用来核对观感与文字可读性。
  *
  * `adb shell am start -n com.leapcontrol.app/.ui.ThemePreviewActivity -e mode grid`
  * （mode=full 时按 1:1 首页头部尺寸渲染并叠上假的车名 / 续航文字）

@@ -76,7 +76,7 @@ import kotlinx.coroutines.launch
 /**
  * 主题中心的两个分类，对应页面上横向的两个 tab。
  *
- * 「日间 / 夜间」各 20 套（10 静态 + 10 动态），全部是实时绘制的场景。
+ * 「日间 / 夜间」各 25 套（10 静态 + 15 动态，其中节日 5 套），全部是实时绘制的场景。
  */
 private enum class ThemeTab(val label: String, val themes: List<SeasonTheme>) {
     DAY("日间", SeasonThemes.DAY),
@@ -86,7 +86,7 @@ private enum class ThemeTab(val label: String, val themes: List<SeasonTheme>) {
 /**
  * 「个性化」页（从「我的」进入，也可由首页顶部「皮肤」按钮直达）：
  *  - 外观模式：跟随系统 / 始终浅色 / 始终深色（三选一，决定明暗与可选主题）
- *  - 主题中心：日间 / 夜间 两个 tab，共 40 套
+ *  - 主题中心：日间 / 夜间 两个 tab，共 50 套
  *  - 相伴卡背景：6 套内置图
  *
  * 缩略图直接用 [ThemeSwatch] 画真实场景，和首页看到的是同一套绘制代码。

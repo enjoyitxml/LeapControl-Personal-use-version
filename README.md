@@ -20,8 +20,8 @@
 
 | 首页 | 个性化 · 日间 | 个性化 · 夜间 | 零记 |
 |:---:|:---:|:---:|:---:|
-| <img src="docs/screenshots/home.jpg" width="180" alt="首页：续航、车模与快捷控车"> | <img src="docs/screenshots/personalize-light.jpg" width="180" alt="个性化：日间主题 20 套"> | <img src="docs/screenshots/personalize-dark.jpg" width="180" alt="个性化：夜间主题 20 套"> | <img src="docs/screenshots/journal.jpg" width="180" alt="零记：用车目标、成本与足迹"> |
-| 续航、车模与快捷控车 | 主题中心 · 日间 20 套 | 主题中心 · 夜间 20 套 | 用车目标、成本与足迹 |
+| <img src="docs/screenshots/home.jpg" width="180" alt="首页：续航、车模与快捷控车"> | <img src="docs/screenshots/personalize-light.jpg" width="180" alt="个性化：日间主题 25 套"> | <img src="docs/screenshots/personalize-dark.jpg" width="180" alt="个性化：夜间主题 25 套"> | <img src="docs/screenshots/journal.jpg" width="180" alt="零记：用车目标、成本与足迹"> |
+| 续航、车模与快捷控车 | 主题中心 · 日间 25 套 | 主题中心 · 夜间 25 套 | 用车目标、成本与足迹 |
 
 完整记录见 [CHANGELOG.md](CHANGELOG.md)，历史安装包在 [Releases](https://github.com/enjoyitxml/LeapControl-Personal-use-version/releases)。
 
@@ -182,7 +182,7 @@
 - **零记 · 用车成本**：一句话记账（手打或语音），自动认分类与金额；**今日 / 本周 / 本月 / 今年 / 全部**五档切换，趋势图跟着换粒度（按天 / 周 / 月 / 年），占比环 + 分类排行（每类一个小图标）
 - **零记 · 城市打卡**：点亮去过的城市、插小红旗（**按省份上色**），足迹图可**双指放大、单指拖动**；**心愿单**记录想去的城市，去过了打卡自动划掉；按日记录行驶里程（数据只存本机，不上传）
 - **数据安全**：零记全部记录存一个文件（`journal.json`），原子写 + 覆盖前转备份 + 留 14 份日快照 + 读失败即拒写；每天自动备份一份到 `Download/LeapControl/`（留 7 份），换机 / 重装可导入恢复
-- **其它**：多车切换、40 套实时绘制背景主题（日间 / 夜间各 20 套）、深浅配色、系统控制中心磁贴、更新检测频率可调（每次启动 / 7 / 14 / 30 天 / 关闭）、意见反馈入口
+- **其它**：多车切换、50 套实时绘制背景主题（日间 / 夜间各 25 套）、深浅配色、系统控制中心磁贴、更新检测频率可调（每次启动 / 7 / 14 / 30 天 / 关闭）、意见反馈入口
 
 > **非全系标配的功能会自动隐藏。** 服务端没有「车型配置清单」接口，判据是车况信号本身
 > （详见 `VehicleCapabilities.kt`）：

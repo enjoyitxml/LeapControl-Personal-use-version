@@ -350,7 +350,7 @@ fun MainScreen(
     // ---- 壁纸自动反色（用户说的「字跟着背景反色」）----
     // 用户上传的图完全不可控：浅色模式配一张夜景，深色字就直接糊在黑图上。
     // 按壁纸的平均亮度决定内容色：亮底配深字、暗底配浅字。
-    // 只对「我的壁纸」生效 —— 内置 40 套主题的底色与文字本来就配套，
+    // 只对「我的壁纸」生效 —— 内置 50 套主题的底色与文字本来就配套，
     // 不参与判定，免得换主题时观感莫名变了。
     val wallpaperAutoContrast by runtime.wallpaperAutoContrast
     LaunchedEffect(season.custom, dark, customBackdropState.revision) {

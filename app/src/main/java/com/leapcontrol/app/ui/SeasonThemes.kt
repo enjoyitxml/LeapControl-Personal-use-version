@@ -5,7 +5,7 @@ import androidx.compose.ui.graphics.Color
 /**
  * 背景主题。
  *
- * 共 40 套：日间 20 套、夜间 20 套，各含 **10 套静态 + 10 套动态**。
+ * 共 50 套：日间 25 套、夜间 25 套，各含 **12 套静态 + 13 套动态**（其中节日 10 套：日 5 / 夜 5）。
  *
  * 每一套 = 整页基础渐变 + 上半屏的场景画面（[scene]，由 [paintScene] 实时绘制）+
  * 一个主题色（[accent]，作用于卡片底色、柱状图、强调元素）。
@@ -785,6 +785,194 @@ object SeasonThemes {
     )
 
     // ========================================================================
+    // 节日 · 日间 5 套（2 静 + 3 动）
+    //
+    // 三条自我约束（用户逐版提意见定下来的，别再往回调）：
+    //  · 圣诞**不再用圣诞树**：「雪原松林」已经有一片松林了，第二套换成堆雪人；
+    //  · 春节**不用灯笼**：「孔明灯升空」已经占了灯笼这个意象，日间改用年桔 / 爆竹；
+    //  · 主体压在上 0.52h 以上 —— 再往下会被 ThemeBackdrop 的淡出洗成粉白。
+    // ========================================================================
+
+    /** 雪原松林：冷白天空 + 低日暖光 + 两簇松林 + 树上挂球（中间留白给车名和车模） */
+    val XMAS_SNOWFIELD = SeasonTheme(
+        id = "xmassnow",
+        label = "雪原松林",
+        mood = "圣诞 · 雪林",
+        gradient = listOf(Color(0xFFE4EEFC), Color(0xFFF4F9FF), Color(0xFFFFFDF6)),
+        gradientDark = listOf(Color(0xFF152030), Color(0xFF101822), Color(0xFF0C1017)),
+        accent = Color(0xFF2E7D5B),
+        accentDark = Color(0xFF4FAE82),
+        scene = SceneKind.XMAS_SNOWFIELD,
+        sceneA = Color(0xFFA9C4DE),
+        sceneB = Color(0xFFDCEBF8),
+        sceneC = Color(0xFFFFE39A),
+        sceneInk = Color(0xFF2F6650),
+    )
+
+    /** 金桔贺岁：一盆年桔摆在台面上，盆上贴菱形福字 */
+    val SPRING_KUMQUAT = SeasonTheme(
+        id = "kumquat",
+        label = "金桔贺岁",
+        mood = "春节 · 年桔",
+        gradient = listOf(Color(0xFFFFF0DA), Color(0xFFFFF6EC), Color(0xFFFFFBF5)),
+        gradientDark = listOf(Color(0xFF2A1B12), Color(0xFF1B110B), Color(0xFF120C08)),
+        accent = Color(0xFFD8532A),
+        accentDark = Color(0xFFF07A4E),
+        scene = SceneKind.SPRING_KUMQUAT,
+        sceneA = Color(0xFFE7BCA4),
+        sceneB = Color(0xFFFFE6D2),
+        sceneC = Color(0xFFFFC154),
+        sceneInk = Color(0xFFB8402A),
+    )
+
+    /** 雪地雪人：两球雪人 + 头顶红鸟 + 三只礼物盒 + 三层落雪 */
+    val XMAS_SNOWMAN = SeasonTheme(
+        id = "snowman",
+        label = "雪地雪人",
+        mood = "圣诞 · 雪人",
+        gradient = listOf(Color(0xFFE6F0FD), Color(0xFFF5FAFF), Color(0xFFFFFEF8)),
+        gradientDark = listOf(Color(0xFF16212E), Color(0xFF101821), Color(0xFF0C1116)),
+        accent = Color(0xFF2E7D5B),
+        accentDark = Color(0xFF4FAE82),
+        scene = SceneKind.XMAS_SNOWMAN,
+        sceneA = Color(0xFFA6C1DC),
+        sceneB = Color(0xFFDAEAF8),
+        sceneC = Color(0xFFFFE7A6),
+        sceneInk = Color(0xFF2C6350),
+    )
+
+    /** 金屑升起：中央暖金光柱 + 三层金屑从下往上飘 */
+    val NEWYEAR_CONFETTI = SeasonTheme(
+        id = "golddust",
+        label = "金屑升起",
+        mood = "元旦 · 金屑",
+        gradient = listOf(Color(0xFFFFF1CE), Color(0xFFFFF8E6), Color(0xFFFFFDF5)),
+        gradientDark = listOf(Color(0xFF2A2110), Color(0xFF1C160B), Color(0xFF131008)),
+        accent = Color(0xFFBF8820),
+        accentDark = Color(0xFFE0A73C),
+        scene = SceneKind.NEWYEAR_CONFETTI,
+        sceneA = Color(0xFFF3D6A0),
+        sceneB = Color(0xFFFFEFD0),
+        sceneC = Color(0xFFFFC24D),
+        sceneInk = Color(0xFFBE8A2E),
+    )
+
+    /** 爆竹迎春：两簇细红筒立在雪地上，两支正在响 */
+    val SPRING_FIRECRACKER = SeasonTheme(
+        id = "firecracker",
+        label = "爆竹迎春",
+        mood = "春节 · 爆竹",
+        gradient = listOf(Color(0xFFFFE9D8), Color(0xFFFFF4EA), Color(0xFFFFFAF4)),
+        gradientDark = listOf(Color(0xFF2B1712), Color(0xFF1D0F0B), Color(0xFF140A08)),
+        accent = Color(0xFFC93B24),
+        accentDark = Color(0xFFE85A40),
+        scene = SceneKind.SPRING_FIRECRACKER,
+        sceneA = Color(0xFFE9BCA6),
+        sceneB = Color(0xFFFFE8D6),
+        sceneC = Color(0xFFFFC154),
+        sceneInk = Color(0xFFB8402A),
+    )
+
+    // ========================================================================
+    // 节日 · 夜间 5 套（2 静 + 3 动）
+    // ========================================================================
+
+    /** 雪夜小屋：星空 + 月 + 松 + 木屋暖窗 + 雪地上的一片暖光 */
+    val XMAS_VILLAGE_NIGHT = SeasonTheme(
+        id = "xmascabin",
+        label = "雪夜小屋",
+        mood = "圣诞 · 木屋",
+        gradient = listOf(Color(0xFF152641), Color(0xFF0D172E), Color(0xFF080D1C)),
+        gradientDark = listOf(Color(0xFF111E33), Color(0xFF0A1224), Color(0xFF060A15)),
+        accent = Color(0xFFF0B75C),
+        accentDark = Color(0xFFFFCF82),
+        scene = SceneKind.XMAS_VILLAGE_NIGHT,
+        night = true,
+        sceneA = Color(0xFF2C4064),
+        sceneB = Color(0xFF131C34),
+        sceneC = Color(0xFFFFC56E),
+        sceneInk = Color(0xFF050810),
+        veilAlphaScale = 0.12f,
+        scrimAlphaScale = 0.85f,
+    )
+
+    /** 红梅映雪：夜雪 + 一枝红梅 + 远处屋檐剪影 */
+    val SPRING_PLUM_SNOW = SeasonTheme(
+        id = "plumsnow",
+        label = "红梅映雪",
+        mood = "春节 · 红梅",
+        gradient = listOf(Color(0xFF371A22), Color(0xFF251018), Color(0xFF160A10)),
+        gradientDark = listOf(Color(0xFF2B141B), Color(0xFF1B0C12), Color(0xFF10070C)),
+        accent = Color(0xFFF26B45),
+        accentDark = Color(0xFFFF8E68),
+        scene = SceneKind.SPRING_PLUM_SNOW,
+        night = true,
+        sceneA = Color(0xFF4A232C),
+        sceneB = Color(0xFF2B1219),
+        sceneC = Color(0xFFFFB067),
+        sceneInk = Color(0xFF080305),
+        veilAlphaScale = 0.12f,
+        scrimAlphaScale = 0.85f,
+    )
+
+    /** 灯串微闪：两道灯串交错呼吸 + 细雪 */
+    val XMAS_TWINKLE = SeasonTheme(
+        id = "twinkle",
+        label = "灯串微闪",
+        mood = "圣诞 · 灯串",
+        gradient = listOf(Color(0xFF152445), Color(0xFF0E1832), Color(0xFF0A1024)),
+        gradientDark = listOf(Color(0xFF111C36), Color(0xFF0B1227), Color(0xFF070C1B)),
+        accent = Color(0xFFFFC46B),
+        accentDark = Color(0xFFFFD894),
+        scene = SceneKind.XMAS_TWINKLE,
+        night = true,
+        sceneA = Color(0xFF263A5E),
+        sceneB = Color(0xFF101A30),
+        sceneC = Color(0xFFFFD08A),
+        sceneInk = Color(0xFF05070F),
+        veilAlphaScale = 0.12f,
+        scrimAlphaScale = 0.85f,
+    )
+
+    /** 跨年烟花：五束错峰烟花 + 城市剪影 + 一整条暖光 */
+    val NEWYEAR_FIREWORKS = SeasonTheme(
+        id = "fireworks",
+        label = "跨年烟花",
+        mood = "元旦 · 烟花",
+        gradient = listOf(Color(0xFF181E4C), Color(0xFF101534), Color(0xFF0A0D20)),
+        gradientDark = listOf(Color(0xFF13183C), Color(0xFF0C1029), Color(0xFF06080F)),
+        accent = Color(0xFFFFC85C),
+        accentDark = Color(0xFFFFDB8A),
+        scene = SceneKind.NEWYEAR_FIREWORKS,
+        night = true,
+        sceneA = Color(0xFF202C52),
+        sceneB = Color(0xFF0C1228),
+        sceneC = Color(0xFFFFD98F),
+        sceneInk = Color(0xFF03050B),
+        veilAlphaScale = 0.12f,
+        scrimAlphaScale = 0.85f,
+    )
+
+    /** 孔明灯升空：三层景深的灯往上升，越往上越淡 */
+    val SPRING_SKY_LANTERNS = SeasonTheme(
+        id = "lanterns",
+        label = "孔明灯升空",
+        mood = "春节 · 灯海",
+        gradient = listOf(Color(0xFF2A1836), Color(0xFF1C1126), Color(0xFF100918)),
+        gradientDark = listOf(Color(0xFF22142C), Color(0xFF160D1E), Color(0xFF0C0713)),
+        accent = Color(0xFFFFB45C),
+        accentDark = Color(0xFFFFCC85),
+        scene = SceneKind.SPRING_SKY_LANTERNS,
+        night = true,
+        sceneA = Color(0xFF37213F),
+        sceneB = Color(0xFF1E1126),
+        sceneC = Color(0xFFFFC073),
+        sceneInk = Color(0xFF05030A),
+        veilAlphaScale = 0.12f,
+        scrimAlphaScale = 0.85f,
+    )
+
+    // ========================================================================
     // 自定义壁纸（日间 / 夜间各一套）
     // ========================================================================
 
@@ -827,21 +1015,23 @@ object SeasonThemes {
 
     // ========================================================================
 
-    /** 日间 20 套（10 静态 + 10 动态）+ 自定义 = 21 格 */
+    /** 日间 25 套（10 静态 + 15 动态，含节日 5 套）+ 自定义 = 26 格 */
     val DAY = listOf(
         MIST_HILLS, CLEAR_SKY, SAKURA, AUTUMN, WINTER, SEASIDE,
         WHEAT_FIELD, LAKE_MIRROR, BAMBOO, DESERT,
         CLOUD_DRIFT, PETAL_FALL, SUN_DUST, LIGHT_RAIN,
         RIPPLING_LAKE, BIRDS, DANDELION, MIST_FLOW, TREE_SHADOW, SUNRISE,
+        XMAS_SNOWFIELD, SPRING_KUMQUAT, XMAS_SNOWMAN, NEWYEAR_CONFETTI, SPRING_FIRECRACKER,
         CUSTOM_DAY,
     )
 
-    /** 夜间 20 套（10 静态 + 10 动态）+ 自定义 = 21 格 */
+    /** 夜间 25 套（10 静态 + 15 动态，含节日 5 套）+ 自定义 = 26 格 */
     val NIGHT_ALL = listOf(
         STARRY, CITY_NIGHT, MOON_VALLEY, NIGHT_SEA, MILKY_WAY, NIGHT_HILLS,
         PINE_NIGHT, SNOW_VILLAGE, LIGHTHOUSE, LAKE_STARS,
         AURORA, METEOR, FIREFLY, NIGHT_RAIN,
         STAR_TRAILS, MOON_RIPPLE, NIGHT_TRAFFIC, SNOW_FALL, CLOUD_MOON, NIGHT_WAVES,
+        XMAS_VILLAGE_NIGHT, SPRING_PLUM_SNOW, XMAS_TWINKLE, NEWYEAR_FIREWORKS, SPRING_SKY_LANTERNS,
         CUSTOM_NIGHT,
     )
 

@@ -37,9 +37,9 @@ class ThemeQuickSwitchTest {
     }
 
     @Test
-    fun `两个池子各二十套内置主题`() {
-        assertEquals(20, ThemeResolver.poolOf(lightTheme).size)
-        assertEquals(20, ThemeResolver.poolOf(nightTheme).size)
+    fun `两个池子各二十五套内置主题`() {
+        assertEquals(25, ThemeResolver.poolOf(lightTheme).size)
+        assertEquals(25, ThemeResolver.poolOf(nightTheme).size)
     }
 
     @Test

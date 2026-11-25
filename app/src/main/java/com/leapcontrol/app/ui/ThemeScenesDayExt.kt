@@ -14,7 +14,7 @@ import kotlin.math.sin
 /**
  * 日间扩展场景（新增 4 套静态 + 6 套动态）。
  *
- * 与 [ThemeScenes] 里原有 20 套共用同一组绘制工具（[softGlow] / [ridge] / [mistBand] /
+ * 与 [ThemeScenes] 里的其余场景共用同一组绘制工具（[softGlow] / [ridge] / [mistBand] /
  * [cloud] / [petal]），所以观感一致：**尺寸全部按画布比例算，颜色全部来自 [ScenePalette]**，
  * 换主题时只要换配色，不用改绘制代码。
  *

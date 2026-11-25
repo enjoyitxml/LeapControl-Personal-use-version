@@ -331,7 +331,7 @@
                     android:contentDescription="空调"
                     android:padding="6dp"
                     android:scaleType="fitCenter"
-                    android:src="@drawable/ic_qc_ac" />
+                    android:src="@drawable/ic_widget_ac_fan" />
             </LinearLayout>
 
             <ImageView

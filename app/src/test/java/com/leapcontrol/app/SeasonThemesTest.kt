@@ -12,8 +12,9 @@ import org.junit.Test
  * 主题注册表的约束检查。
  *
  * 这些不是「实现细节」测试，而是产品约定：
- * 日间 20 套 / 夜间 20 套（各再加一个「我的壁纸」自定义格）、每组 10 静态 + 10 动态、
- * id 唯一、夜间主题必须转深色内容。以后加主题或改 id 时，这里会第一时间拦下来。
+ * 日间 25 套 / 夜间 25 套（各再加一个「我的壁纸」自定义格）、每组 12 静态 + 13 动态
+ * （原 10 + 节日各 2 静 / 3 动）、id 唯一、夜间主题必须转深色内容。
+ * 以后加主题或改 id 时，这里会第一时间拦下来。
  *
  * 自定义壁纸（[com.leapcontrol.app.ui.SeasonTheme.custom]）是个特殊项：它没有场景、
  * 日间与夜间两套刻意同名「我的壁纸」（不在同一屏出现），所以凡是「唯一性 / 必须有场景」
@@ -22,30 +23,30 @@ import org.junit.Test
 class SeasonThemesTest {
 
     @Test
-    fun `日间夜间各二十套加一个自定义格`() {
-        // 20 套内置 + 末尾一个「我的壁纸」，共 21 格
-        assertEquals(21, SeasonThemes.DAY.size)
-        assertEquals(21, SeasonThemes.NIGHT_ALL.size)
-        assertEquals(42, SeasonThemes.ALL.size)
+    fun `日间夜间各二十五套加一个自定义格`() {
+        // 25 套内置 + 末尾一个「我的壁纸」，共 26 格
+        assertEquals(26, SeasonThemes.DAY.size)
+        assertEquals(26, SeasonThemes.NIGHT_ALL.size)
+        assertEquals(52, SeasonThemes.ALL.size)
         // 计数文案用 BUILTIN_COUNT，别把自定义算成一套主题
-        assertEquals(40, SeasonThemes.BUILTIN_COUNT)
-        // 自定义格必须排在最后一格，用户才不用在 20 套里找它
+        assertEquals(50, SeasonThemes.BUILTIN_COUNT)
+        // 自定义格必须排在最后一格，用户才不用在 25 套里找它
         assertTrue(SeasonThemes.DAY.last().custom)
         assertTrue(SeasonThemes.NIGHT_ALL.last().custom)
     }
 
     @Test
-    fun `日间是十静态十动态`() {
+    fun `日间是十二静态十三动态`() {
         val builtin = SeasonThemes.DAY.filter { !it.custom }
-        assertEquals(10, builtin.count { !it.animated })
-        assertEquals(10, builtin.count { it.animated })
+        assertEquals(12, builtin.count { !it.animated })
+        assertEquals(13, builtin.count { it.animated })
     }
 
     @Test
-    fun `夜间是十静态十动态`() {
+    fun `夜间是十二静态十三动态`() {
         val builtin = SeasonThemes.NIGHT_ALL.filter { !it.custom }
-        assertEquals(10, builtin.count { !it.animated })
-        assertEquals(10, builtin.count { it.animated })
+        assertEquals(12, builtin.count { !it.animated })
+        assertEquals(13, builtin.count { it.animated })
     }
 
     @Test
